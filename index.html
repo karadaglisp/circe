@@ -63,7 +63,8 @@
             PenLine,
             Sun,
             Moon,
-            Flame
+            Flame,
+            Check
         } from 'lucide-react';
 
         // --- Components ---
@@ -141,13 +142,16 @@
             // Category Trackers State
             const [trackers, setTrackers] = useState(getInitialTrackers);
             const [activeTrackerId, setActiveTrackerId] = useState(null);
+            
+            // Tracker Editing State
+            const [editingTrackerId, setEditingTrackerId] = useState(null);
+            const [editValues, setEditValues] = useState({ hours: 0, minutes: 0 });
 
             // Notepad State
             const [noteContent, setNoteContent] = useState(() => localStorage.getItem('circe-notes') || '');
 
             // --- Persistence Effects ---
 
-            // Save basic settings & notes immediately on change
             useEffect(() => { localStorage.setItem('circe-darkmode', JSON.stringify(isDarkMode)); }, [isDarkMode]);
             useEffect(() => { localStorage.setItem('circe-pomoSettings', JSON.stringify(pomoSettings)); }, [pomoSettings]);
             useEffect(() => { localStorage.setItem('circe-notes', noteContent); }, [noteContent]);
@@ -163,13 +167,11 @@
 
             // --- Logic Effects ---
 
-            // Clock Update
             useEffect(() => {
                 const timer = setInterval(() => setCurrentDate(new Date()), 60000); 
                 return () => clearInterval(timer);
             }, []);
 
-            // Dark Mode Class
             useEffect(() => {
                 const html = document.documentElement;
                 if (isDarkMode) html.classList.add('dark');
@@ -179,8 +181,6 @@
             // Gamification Check
             useEffect(() => {
                 const todayStr = new Date().toDateString();
-                
-                // Check if all count-down trackers (target > 0) are finished (current === 0)
                 const mainGoals = trackers.filter(t => t.target > 0);
                 const allFinished = mainGoals.every(t => t.current === 0);
                 
@@ -189,8 +189,6 @@
                 if (allFinished && lastStreakDate !== todayStr) {
                     setStreak(s => s + 1);
                     setLastStreakDate(todayStr);
-                    
-                    // Optional: You could trigger a confetti effect here in a future update
                 }
             }, [trackers, lastStreakDate]);
 
@@ -269,6 +267,49 @@
                     })
                 );
                 if (activeTrackerId === id) setActiveTrackerId(null);
+            };
+
+            // Tracker Edit Handlers
+            const startEditingTracker = (tracker, e) => {
+                e.stopPropagation();
+                setEditingTrackerId(tracker.id);
+                const h = Math.floor(tracker.target / 3600);
+                const m = Math.floor((tracker.target % 3600) / 60);
+                setEditValues({ hours: h, minutes: m });
+                // If this tracker was running, pause it while editing
+                if (activeTrackerId === tracker.id) {
+                    setActiveTrackerId(null);
+                }
+            };
+
+            const saveTrackerEdit = (id) => {
+                const newTarget = (parseInt(editValues.hours) * 3600) + (parseInt(editValues.minutes) * 60);
+                
+                setTrackers(prev => prev.map(t => {
+                    if (t.id === id) {
+                        // If current time hasn't changed from original target, update current to new target
+                        // This handles the "reset on edit" expectation for unused timers
+                        const isUnused = t.current === t.target;
+                        
+                        // If target becomes 0 (open ended), set current to 0 so it counts up from 0
+                        if (newTarget === 0) {
+                            return { ...t, target: 0, current: 0 };
+                        }
+
+                        // If it was countdown and staying countdown
+                        return { 
+                            ...t, 
+                            target: newTarget, 
+                            current: isUnused ? newTarget : t.current 
+                        };
+                    }
+                    return t;
+                }));
+                setEditingTrackerId(null);
+            };
+
+            const cancelEdit = () => {
+                setEditingTrackerId(null);
             };
 
             // --- Render Helpers ---
@@ -426,74 +467,134 @@
                                             }
                                         `}
                                     >
-                                        <div className="flex justify-between items-start mb-4">
-                                            <div className={`p-3 rounded-xl ${tracker.color} bg-opacity-10 text-${tracker.color.split('-')[1]}-600 dark:text-${tracker.color.split('-')[1]}-400`}>
-                                                <tracker.icon className={`w-6 h-6 text-${tracker.color.split('-')[1]}-600`} />
-                                            </div>
-                                            <div className="text-right">
-                                                <span className="block text-2xl font-mono font-semibold">
-                                                    {Math.floor(tracker.current / 3600)}h {Math.floor((tracker.current % 3600) / 60)}m
-                                                </span>
-                                                {tracker.target > 0 ? (
-                                                    <span className="text-xs text-slate-400">
-                                                        Remaining
-                                                    </span>
-                                                ) : (
-                                                    <span className="text-xs text-slate-400">
-                                                        Elapsed
-                                                    </span>
-                                                )}
-                                            </div>
-                                        </div>
-
-                                        <div>
-                                            <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-1">{tracker.name}</h3>
-                                            <div className="flex items-center justify-between text-xs text-slate-400 mb-3">
-                                                {tracker.target > 0 ? (
-                                                    <span>{Math.round((tracker.current / tracker.target) * 100)}% Left</span>
-                                                ) : (
-                                                    <span>Open-ended session</span>
-                                                )}
-                                                
-                                                {/* Reset Button (only if changed) */}
-                                                {tracker.current !== (tracker.target > 0 ? tracker.target : 0) && (
+                                        {/* Edit Mode View */}
+                                        {editingTrackerId === tracker.id ? (
+                                            <div className="h-full flex flex-col justify-center animate-in fade-in">
+                                                <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
+                                                    <tracker.icon className="w-5 h-5" />
+                                                    Edit {tracker.name}
+                                                </h3>
+                                                <div className="grid grid-cols-2 gap-4 mb-6">
+                                                    <div>
+                                                        <label className="text-xs uppercase font-bold text-slate-400">Hours</label>
+                                                        <input 
+                                                            type="number" 
+                                                            min="0"
+                                                            value={editValues.hours}
+                                                            onChange={(e) => setEditValues({...editValues, hours: e.target.value})}
+                                                            className="w-full mt-1 p-3 bg-slate-100 dark:bg-slate-700 rounded-lg text-lg font-mono"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-xs uppercase font-bold text-slate-400">Minutes</label>
+                                                        <input 
+                                                            type="number" 
+                                                            min="0" 
+                                                            max="59"
+                                                            value={editValues.minutes}
+                                                            onChange={(e) => setEditValues({...editValues, minutes: e.target.value})}
+                                                            className="w-full mt-1 p-3 bg-slate-100 dark:bg-slate-700 rounded-lg text-lg font-mono"
+                                                        />
+                                                    </div>
+                                                </div>
+                                                <div className="flex gap-2">
                                                     <button 
-                                                        onClick={(e) => { e.stopPropagation(); resetTracker(tracker.id); }}
-                                                        className="hover:text-rose-500 transition-colors p-1"
-                                                        title="Reset Timer"
+                                                        onClick={() => saveTrackerEdit(tracker.id)}
+                                                        className="flex-1 py-2 bg-indigo-500 text-white rounded-lg flex items-center justify-center gap-2 hover:bg-indigo-600 transition"
                                                     >
-                                                        <RotateCcw className="w-3.5 h-3.5" />
+                                                        <Check className="w-4 h-4" /> Save
                                                     </button>
-                                                )}
+                                                    <button 
+                                                        onClick={cancelEdit}
+                                                        className="flex-1 py-2 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg flex items-center justify-center gap-2 hover:bg-slate-200 dark:hover:bg-slate-600 transition"
+                                                    >
+                                                        <X className="w-4 h-4" /> Cancel
+                                                    </button>
+                                                </div>
                                             </div>
-                                            
-                                            {tracker.target > 0 && (
-                                                <ProgressBar current={tracker.current} target={tracker.target} colorClass={tracker.color} />
-                                            )}
-                                        </div>
+                                        ) : (
+                                            /* Normal View */
+                                            <>
+                                                <div className="absolute top-4 right-4 z-10">
+                                                     <button 
+                                                        onClick={(e) => startEditingTracker(tracker, e)}
+                                                        className="p-1.5 text-slate-300 hover:text-indigo-500 dark:text-slate-600 dark:hover:text-indigo-400 transition"
+                                                        title="Edit Goal"
+                                                     >
+                                                         <Settings className="w-4 h-4" />
+                                                     </button>
+                                                </div>
 
-                                        <div className="mt-6">
-                                            <button
-                                                onClick={() => toggleTracker(tracker.id)}
-                                                className={`
-                                                    w-full py-3 rounded-xl font-medium flex items-center justify-center gap-2 transition-colors
-                                                    ${activeTrackerId === tracker.id
-                                                    ? 'bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/30'
-                                                    : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
-                                                    }
-                                                `}
-                                            >
-                                                {activeTrackerId === tracker.id ? (
-                                                    <>
-                                                        <Pause className="w-4 h-4" /> Pause
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <Play className="w-4 h-4" /> Start
-                                                    </>
-                                                )}
-                                            </button>
-                                        </div>
+                                                <div className="flex justify-between items-start mb-4">
+                                                    <div className={`p-3 rounded-xl ${tracker.color} bg-opacity-10 text-${tracker.color.split('-')[1]}-600 dark:text-${tracker.color.split('-')[1]}-400`}>
+                                                        <tracker.icon className={`w-6 h-6 text-${tracker.color.split('-')[1]}-600`} />
+                                                    </div>
+                                                    <div className="text-right pr-6">
+                                                        <span className="block text-2xl font-mono font-semibold">
+                                                            {Math.floor(tracker.current / 3600)}h {Math.floor((tracker.current % 3600) / 60)}m
+                                                        </span>
+                                                        {tracker.target > 0 ? (
+                                                            <span className="text-xs text-slate-400">
+                                                                Remaining
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-xs text-slate-400">
+                                                                Elapsed
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                <div>
+                                                    <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-1">{tracker.name}</h3>
+                                                    <div className="flex items-center justify-between text-xs text-slate-400 mb-3">
+                                                        {tracker.target > 0 ? (
+                                                            <span>{Math.round((tracker.current / tracker.target) * 100)}% Left</span>
+                                                        ) : (
+                                                            <span>Open-ended session</span>
+                                                        )}
+                                                        
+                                                        {/* Reset Button (only if changed) */}
+                                                        {tracker.current !== (tracker.target > 0 ? tracker.target : 0) && (
+                                                            <button 
+                                                                onClick={(e) => { e.stopPropagation(); resetTracker(tracker.id); }}
+                                                                className="hover:text-rose-500 transition-colors p-1"
+                                                                title="Reset Timer"
+                                                            >
+                                                                <RotateCcw className="w-3.5 h-3.5" />
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                    
+                                                    {tracker.target > 0 && (
+                                                        <ProgressBar current={tracker.current} target={tracker.target} colorClass={tracker.color} />
+                                                    )}
+                                                </div>
+
+                                                <div className="mt-6">
+                                                    <button
+                                                        onClick={() => toggleTracker(tracker.id)}
+                                                        className={`
+                                                            w-full py-3 rounded-xl font-medium flex items-center justify-center gap-2 transition-colors
+                                                            ${activeTrackerId === tracker.id
+                                                            ? 'bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/30'
+                                                            : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
+                                                            }
+                                                        `}
+                                                    >
+                                                        {activeTrackerId === tracker.id ? (
+                                                            <>
+                                                                <Pause className="w-4 h-4" /> Pause
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <Play className="w-4 h-4" /> Start
+                                                            </>
+                                                        )}
+                                                    </button>
+                                                </div>
+                                            </>
+                                        )}
                                     </div>
                                 ))}
                             </div>
