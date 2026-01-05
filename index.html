@@ -87,7 +87,7 @@
         // >>> CONFIGURATION STEP FOR GITHUB PAGES <<<
         // If deploying to GitHub, replace the values below with your own Firebase Project keys.
         // You can get these from the Firebase Console > Project Settings > General > Your Apps
-        const firebaseConfig = {
+        const GITHUB_PAGES_CONFIG = {
             apiKey: "AIzaSyBL1wtt06Vc34uSDm-P7FDOa-he890k39A",
             authDomain: "circe-462d9.firebaseapp.com",
             projectId: "circe-462d9",
@@ -104,10 +104,10 @@
                 firebaseConfig = JSON.parse(__firebase_config);
             } else {
                 // If running on GitHub/Localhost, use your custom config
-                firebaseConfig = YOUR_FIREBASE_CONFIG;
+                firebaseConfig = GITHUB_PAGES_CONFIG;
             }
         } catch (e) {
-            firebaseConfig = YOUR_FIREBASE_CONFIG;
+            firebaseConfig = GITHUB_PAGES_CONFIG;
         }
 
         // Initialize only if config is valid
