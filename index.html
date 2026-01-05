@@ -42,43 +42,114 @@
     <style>
         /* Smooth transitions for theme switching */
         body { transition: background-color 0.3s ease, color 0.3s ease; }
+        
+        /* Hide scrollbar for clean UI in gym cards */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none;  scrollbar-width: none; }
+        
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 3px solid #6366f1;
+            width: 24px;
+            height: 24px;
+            -webkit-animation: spin 1s linear infinite; /* Safari */
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body class="bg-slate-50 dark:bg-slate-900 transition-colors duration-300">
     <div id="root"></div>
 
     <script type="text/babel" data-type="module">
-        import React, { useState, useEffect, useRef } from 'react';
+        import React, { useState, useEffect, useMemo, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
         import { 
-            Play, 
-            Pause, 
-            RotateCcw, 
-            Settings, 
-            BookOpen, 
-            HeartPulse, 
-            Coffee, 
-            Dumbbell,
-            X,
-            StickyNote,
-            PenLine,
-            Sun,
-            Moon,
-            Flame,
-            Check
+            Play, Pause, RotateCcw, Settings, BookOpen, HeartPulse, Coffee, Dumbbell, 
+            X, StickyNote, PenLine, Sun, Moon, Flame, Check, LayoutDashboard, 
+            Calendar as CalendarIcon, ChevronLeft, ChevronRight, CheckCircle2,
+            Trophy, ArrowUpCircle, Home, Warehouse, PersonStanding, Activity, 
+            Timer, Weight, ArrowRight, Cloud, CloudOff, Loader2, Utensils, 
+            PieChart, Zap, Edit2, RefreshCw, ShoppingCart, Save, ChefHat
         } from 'lucide-react';
+        
+        // --- Firebase Imports ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- Components ---
+        // --- Firebase Initialization ---
+
+        // >>> CONFIGURATION STEP FOR GITHUB PAGES <<<
+        // If deploying to GitHub, replace the values below with your own Firebase Project keys.
+        // You can get these from the Firebase Console > Project Settings > General > Your Apps
+        const YOUR_FIREBASE_CONFIG = {
+            apiKey: "REPLACE_WITH_YOUR_API_KEY",
+            authDomain: "REPLACE_WITH_YOUR_PROJECT_ID.firebaseapp.com",
+            projectId: "REPLACE_WITH_YOUR_PROJECT_ID",
+            storageBucket: "REPLACE_WITH_YOUR_PROJECT_ID.firebasestorage.app",
+            messagingSenderId: "REPLACE_WITH_YOUR_SENDER_ID",
+            appId: "REPLACE_WITH_YOUR_APP_ID"
+        };
+
+        // Determine which config to use (Preview environment vs Production)
+        let firebaseConfig;
+        try {
+            // If running in the AI preview, use the injected config
+            if (typeof __firebase_config !== 'undefined') {
+                firebaseConfig = JSON.parse(__firebase_config);
+            } else {
+                // If running on GitHub/Localhost, use your custom config
+                firebaseConfig = YOUR_FIREBASE_CONFIG;
+            }
+        } catch (e) {
+            firebaseConfig = YOUR_FIREBASE_CONFIG;
+        }
+
+        // Initialize only if config is valid
+        let app, auth, db;
+        let isFirebaseReady = false;
+
+        try {
+            if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "REPLACE_WITH_YOUR_API_KEY") {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                isFirebaseReady = true;
+            } else if (typeof __firebase_config !== 'undefined') {
+                // Fallback for preview mode only
+                app = initializeApp(JSON.parse(__firebase_config));
+                auth = getAuth(app);
+                db = getFirestore(app);
+                isFirebaseReady = true;
+            }
+        } catch (e) {
+            console.error("Firebase Initialization Error:", e);
+        }
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'circe-app';
+
+        // --- Helper: Debounce Hook for Cloud Saving ---
+        function useDebounce(value, delay) {
+            const [debouncedValue, setDebouncedValue] = useState(value);
+            useEffect(() => {
+                const handler = setTimeout(() => { setDebouncedValue(value); }, delay);
+                return () => clearTimeout(handler);
+            }, [value, delay]);
+            return debouncedValue;
+        }
+
+        // --- Shared Components ---
 
         const ProgressBar = ({ current, target, colorClass }) => {
             const percentage = target > 0 ? Math.min(100, (current / target) * 100) : 0;
-            
             return (
                 <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2.5 mt-2">
-                <div 
-                    className={`h-2.5 rounded-full transition-all duration-500 ${colorClass}`} 
-                    style={{ width: `${percentage}%` }}
-                ></div>
+                    <div className={`h-2.5 rounded-full transition-all duration-500 ${colorClass}`} style={{ width: `${percentage}%` }}></div>
                 </div>
             );
         };
@@ -87,239 +158,799 @@
             const h = Math.floor(seconds / 3600);
             const m = Math.floor((seconds % 3600) / 60);
             const s = seconds % 60;
-            
-            if (h > 0) {
-                return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-            }
+            if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
             return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
         };
 
-        // Default Configuration
+        // --- GYM DATA & CONFIG ---
+
+        const GYM_CYCLE_LENGTH = 4; 
+        
+        const WORKOUT_DATA = {
+            'gym': {
+                'chest_back': [
+                    { id: 'gym_cb1', name: 'Barbell Bench Press', startWeight: 40, startReps: 8 },
+                    { id: 'gym_cb2', name: 'Barbell Bent Over Row', startWeight: 40, startReps: 8 },
+                    { id: 'gym_cb3', name: 'Incline DB Press', startWeight: 18, startReps: 8 },
+                    { id: 'gym_cb4', name: 'Lat Pulldown (Wide)', startWeight: 45, startReps: 8 },
+                    { id: 'gym_cb5', name: 'Cable Flys', startWeight: 15, startReps: 10 },
+                    { id: 'gym_cb6', name: 'Seated Cable Row', startWeight: 40, startReps: 8 },
+                    { id: 'gym_cb_abs', name: 'Cable Crunches', startWeight: 25, startReps: 12 },
+                    { id: 'gym_cb_cardio', name: 'Jump Rope (Mins)', startWeight: 0, startReps: 10, isTime: true }
+                ],
+                'arms': [
+                    { id: 'gym_ar1', name: 'Barbell Curl', startWeight: 20, startReps: 8 },
+                    { id: 'gym_ar2', name: 'Tricep Pushdown (Rope)', startWeight: 25, startReps: 10 },
+                    { id: 'gym_ar3', name: 'DB Hammer Curls', startWeight: 12, startReps: 10 },
+                    { id: 'gym_ar4', name: 'Skullcrushers (EZ Bar)', startWeight: 20, startReps: 10 },
+                    { id: 'gym_ar5', name: 'Preacher Curl', startWeight: 20, startReps: 10 },
+                    { id: 'gym_ar6', name: 'Overhead Cable Ext', startWeight: 20, startReps: 10 },
+                    { id: 'gym_ar_abs', name: 'Hanging Leg Raises', startWeight: 0, startReps: 10 },
+                    { id: 'gym_ar_cardio', name: 'Jump Rope (Mins)', startWeight: 0, startReps: 10, isTime: true }
+                ],
+                'legs_shoulders': [
+                    { id: 'gym_ls1', name: 'Barbell Squat', startWeight: 60, startReps: 8 },
+                    { id: 'gym_ls2', name: 'Barbell Overhead Press', startWeight: 30, startReps: 8 },
+                    { id: 'gym_ls3', name: 'Romanian Deadlift', startWeight: 60, startReps: 8 },
+                    { id: 'gym_ls4', name: 'Leg Extension', startWeight: 35, startReps: 10 },
+                    { id: 'gym_ls5', name: 'DB Lateral Raises', startWeight: 8, startReps: 12 },
+                    { id: 'gym_ls6', name: 'Face Pulls', startWeight: 15, startReps: 12 },
+                    { id: 'gym_ls_abs', name: 'Weighted Situps', startWeight: 10, startReps: 12 },
+                    { id: 'gym_ls_cardio', name: 'Jump Rope (Mins)', startWeight: 0, startReps: 10, isTime: true }
+                ]
+            },
+            'home': { // Bench + Barbell + Dumbbells
+                'chest_back': [
+                    { id: 'home_cb1', name: 'Barbell Bench Press', startWeight: 40, startReps: 8 },
+                    { id: 'home_cb2', name: 'Barbell Bent Over Row', startWeight: 40, startReps: 8 },
+                    { id: 'home_cb3', name: 'Incline DB Press', startWeight: 15, startReps: 8 },
+                    { id: 'home_cb4', name: 'One Arm DB Row', startWeight: 18, startReps: 10 },
+                    { id: 'home_cb5', name: 'DB Flys', startWeight: 10, startReps: 12 },
+                    { id: 'home_cb6', name: 'Barbell Pullover', startWeight: 15, startReps: 10 },
+                    { id: 'home_cb_abs', name: 'Plate Weighted Situps', startWeight: 10, startReps: 12 },
+                    { id: 'home_cb_cardio', name: 'Jump Rope (Mins)', startWeight: 0, startReps: 10, isTime: true }
+                ],
+                'arms': [
+                    { id: 'home_ar1', name: 'Barbell Curl', startWeight: 20, startReps: 8 },
+                    { id: 'home_ar2', name: 'Lying Tricep Ext (BB)', startWeight: 20, startReps: 10 },
+                    { id: 'home_ar3', name: 'DB Hammer Curls', startWeight: 12, startReps: 10 },
+                    { id: 'home_ar4', name: 'Seated DB Overhead Ext', startWeight: 15, startReps: 10 },
+                    { id: 'home_ar5', name: 'Concentration Curls', startWeight: 10, startReps: 12 },
+                    { id: 'home_ar6', name: 'Weighted Bench Dips', startWeight: 10, startReps: 12 },
+                    { id: 'home_ar_abs', name: 'Lying Leg Raises', startWeight: 0, startReps: 12 },
+                    { id: 'home_ar_cardio', name: 'Jump Rope (Mins)', startWeight: 0, startReps: 10, isTime: true }
+                ],
+                'legs_shoulders': [
+                    { id: 'home_ls1', name: 'Barbell Squat', startWeight: 50, startReps: 8 },
+                    { id: 'home_ls2', name: 'Barbell Overhead Press', startWeight: 30, startReps: 8 },
+                    { id: 'home_ls3', name: 'Barbell RDL', startWeight: 50, startReps: 8 },
+                    { id: 'home_ls4', name: 'DB Lunges', startWeight: 12, startReps: 10 },
+                    { id: 'home_ls5', name: 'DB Lateral Raises', startWeight: 8, startReps: 12 },
+                    { id: 'home_ls6', name: 'DB Rear Delt Flys', startWeight: 6, startReps: 12 },
+                    { id: 'home_ls_abs', name: 'Russian Twists (Weighted)', startWeight: 10, startReps: 20 },
+                    { id: 'home_ls_cardio', name: 'Jump Rope (Mins)', startWeight: 0, startReps: 10, isTime: true }
+                ]
+            },
+            'body': { // No Equipment - Higher Reps Logic
+                'chest_back': [
+                    { id: 'body_cb1', name: 'Pushups (Strict)', startWeight: 0, startReps: 20 },
+                    { id: 'body_cb2', name: 'Inverted Row (Table/Door)', startWeight: 0, startReps: 15 },
+                    { id: 'body_cb3', name: 'Wide Grip Pushups', startWeight: 0, startReps: 15 },
+                    { id: 'body_cb4', name: 'Superman Hold (Secs)', startWeight: 0, startReps: 30, isTime: true },
+                    { id: 'body_cb5', name: 'Decline Pushups', startWeight: 0, startReps: 12 },
+                    { id: 'body_cb6', name: 'Doorframe Towel Rows', startWeight: 0, startReps: 15 },
+                    { id: 'body_cb_abs', name: 'Crunches', startWeight: 0, startReps: 25 },
+                    { id: 'body_cb_cardio', name: 'Jump Rope (Mins)', startWeight: 0, startReps: 10, isTime: true }
+                ],
+                'arms': [
+                    { id: 'body_ar1', name: 'Diamond Pushups', startWeight: 0, startReps: 12 },
+                    { id: 'body_ar2', name: 'Chin-ups (if bar)', startWeight: 0, startReps: 5 },
+                    { id: 'body_ar3', name: 'Tricep Dips (Chair)', startWeight: 0, startReps: 20 },
+                    { id: 'body_ar4', name: 'Pike Pushups', startWeight: 0, startReps: 10 },
+                    { id: 'body_ar5', name: 'Bodyweight Tricep Ext', startWeight: 0, startReps: 12 },
+                    { id: 'body_ar6', name: 'Plank to Pushup', startWeight: 0, startReps: 12 },
+                    { id: 'body_ar_abs', name: 'Leg Raises', startWeight: 0, startReps: 15 },
+                    { id: 'body_ar_cardio', name: 'Jump Rope (Mins)', startWeight: 0, startReps: 10, isTime: true }
+                ],
+                'legs_shoulders': [
+                    { id: 'body_ls1', name: 'Air Squats', startWeight: 0, startReps: 25 },
+                    { id: 'body_ls2', name: 'Pike Pushups', startWeight: 0, startReps: 10 },
+                    { id: 'body_ls3', name: 'Reverse Lunges', startWeight: 0, startReps: 15 },
+                    { id: 'body_ls4', name: 'Bulgarian Split Squat', startWeight: 0, startReps: 12 },
+                    { id: 'body_ls5', name: 'Glute Bridges', startWeight: 0, startReps: 20 },
+                    { id: 'body_ls6', name: 'Calf Raises', startWeight: 0, startReps: 30 },
+                    { id: 'body_ls_abs', name: 'Plank (Seconds)', startWeight: 0, startReps: 45, isTime: true },
+                    { id: 'body_ls_cardio', name: 'Jump Rope (Mins)', startWeight: 0, startReps: 10, isTime: true }
+                ]
+            }
+        };
+
+        const getWorkoutType = (date, startDateStr) => {
+            const start = new Date(startDateStr);
+            const current = new Date(date);
+            start.setHours(0,0,0,0);
+            current.setHours(0,0,0,0);
+            
+            const diffTime = current - start;
+            const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+            const cycleIndex = ((diffDays % GYM_CYCLE_LENGTH) + GYM_CYCLE_LENGTH) % GYM_CYCLE_LENGTH;
+            
+            switch(cycleIndex) {
+                case 0: return { type: 'chest_back', label: 'Chest & Back', color: 'bg-rose-500', text: 'text-rose-600', border: 'border-rose-200', borderMain: 'border-rose-500' };
+                case 1: return { type: 'arms', label: 'Biceps & Triceps', color: 'bg-blue-500', text: 'text-blue-600', border: 'border-blue-200', borderMain: 'border-blue-500' };
+                case 2: return { type: 'legs_shoulders', label: 'Legs & Shoulders', color: 'bg-emerald-500', text: 'text-emerald-600', border: 'border-emerald-200', borderMain: 'border-emerald-500' };
+                default: return { type: 'rest', label: 'Rest Day', color: 'bg-slate-400', text: 'text-slate-500', border: 'border-slate-200', borderMain: 'border-slate-400' };
+            }
+        };
+
+        // --- NUTRITION DATA & RECIPE POOL ---
+        
+        // Recipe Pool with Grocery amounts (Integers or grams)
+        const RECIPE_POOL = {
+            // Breakfast
+            'b_strapatsada': { name: 'Strapatsada', portion: '4 Eggs, 2 Tomatoes, 30g Feta', p: 32, c: 10, f: 25, kcal: 400, cost: 2.2, grocery: { 'Eggs': 4, 'Tomatoes': 2, 'Feta (g)': 30, 'Olive Oil (ml)': 10 }, instructions: "1. Grate tomatoes. 2. Simmer tomato pulp with oil until thick. 3. Add beaten eggs and scramble. 4. Add feta at the end." },
+            'b_boiled': { name: 'Hard Boiled Eggs', portion: '4 Large Eggs', p: 24, c: 2, f: 20, kcal: 280, cost: 1.6, grocery: { 'Eggs': 4 }, instructions: "1. Boil water. 2. Add eggs carefully. 3. Boil for 9-10 mins. 4. Cool in cold water and peel." },
+            'b_fried': { name: 'Fried Eggs', portion: '4 Eggs fried in 10ml Olive Oil', p: 24, c: 2, f: 30, kcal: 380, cost: 1.7, grocery: { 'Eggs': 4, 'Olive Oil (ml)': 10 }, instructions: "1. Heat oil in pan. 2. Crack eggs into pan. 3. Cook until whites are set but yolks runny. 4. Season." },
+            'b_scrambled': { name: 'Scrambled Eggs', portion: '4 Eggs, Toast', p: 28, c: 20, f: 20, kcal: 400, cost: 1.8, grocery: { 'Eggs': 4, 'Bread (slices)': 2 }, instructions: "1. Whisk eggs with splash of water. 2. Pour into heated pan. 3. Stir gently until set. 4. Serve with toast." },
+            'b_omelet_turkey': { name: 'Turkey Omelet', portion: '4 Eggs, 3 slices Turkey', p: 35, c: 2, f: 20, kcal: 350, cost: 2.5, grocery: { 'Eggs': 4, 'Turkey Slices': 3 }, instructions: "1. Whisk eggs. 2. Pour into pan. 3. Add turkey slices when half-set. 4. Fold and serve." },
+            'b_pancakes': { name: 'Oat Pancakes', portion: '3 Eggs, 60g Oats, Banana', p: 25, c: 55, f: 15, kcal: 480, cost: 1.5, grocery: { 'Eggs': 3, 'Oats (g)': 60, 'Banana': 1 }, instructions: "1. Blend eggs, oats, and banana. 2. Pour batter onto hot pan. 3. Flip when bubbles appear. 4. Serve." },
+            'b_feta_omelet': { name: 'Feta Omelet', portion: '4 Eggs, 50g Feta, Spinach', p: 35, c: 5, f: 30, kcal: 480, cost: 2.3, grocery: { 'Eggs': 4, 'Feta (g)': 50, 'Spinach (g)': 50 }, instructions: "1. Saute spinach briefly. 2. Pour whisked eggs over. 3. Crumble feta on top. 4. Fold when set." },
+
+            // Snacks
+            's_fruit_nuts': { name: 'Fruit & Nuts', portion: '1 Banana, 30g Almonds', p: 7, c: 30, f: 15, kcal: 280, cost: 1.2, grocery: { 'Banana': 1, 'Almonds (g)': 30 }, instructions: "1. Eat banana. 2. Eat almonds. Simple." },
+            's_apple': { name: 'Apple', portion: '1 Large Apple', p: 0, c: 20, f: 0, kcal: 80, cost: 0.4, grocery: { 'Apple': 1 }, instructions: "Wash and eat." },
+            's_orange': { name: 'Orange', portion: '1 Large Orange', p: 1, c: 15, f: 0, kcal: 65, cost: 0.3, grocery: { 'Orange': 1 }, instructions: "Peel and eat." },
+            's_pear': { name: 'Pear', portion: '1 Large Pear', p: 0, c: 25, f: 0, kcal: 100, cost: 0.5, grocery: { 'Pear': 1 }, instructions: "Wash and eat." },
+            's_kiwi': { name: 'Kiwis', portion: '2 Kiwis', p: 2, c: 20, f: 0, kcal: 90, cost: 0.6, grocery: { 'Kiwi': 2 }, instructions: "Cut in half and scoop with spoon." },
+            's_banana': { name: 'Banana', portion: '1 Large Banana', p: 1, c: 27, f: 0, kcal: 105, cost: 0.3, grocery: { 'Banana': 1 }, instructions: "Peel and eat." },
+            's_yogurt_honey': { name: 'Greek Yogurt Bowl', portion: '250g 2% Yogurt, 20g Honey', p: 25, c: 25, f: 5, kcal: 250, cost: 1.5, grocery: { 'Greek Yogurt (g)': 250, 'Honey (g)': 20 }, instructions: "1. Scoop yogurt into bowl. 2. Drizzle honey on top." },
+            's_protein_shake': { name: 'Protein Shake', portion: '1 Scoop Whey, 300ml Milk', p: 35, c: 15, f: 5, kcal: 250, cost: 1.2, grocery: { 'Whey Scoop': 1, 'Milk (ml)': 300 }, instructions: "1. Add milk to shaker. 2. Add whey powder. 3. Shake well." },
+            's_yogurt_walnuts': { name: 'Yogurt & Walnuts', portion: '200g Yogurt, 30g Walnuts', p: 24, c: 10, f: 20, kcal: 320, cost: 1.8, grocery: { 'Greek Yogurt (g)': 200, 'Walnuts (g)': 30 }, instructions: "1. Bowl the yogurt. 2. Crush walnuts on top." },
+            's_protein_bar': { name: 'Protein Bar', portion: '1 Bar', p: 20, c: 20, f: 8, kcal: 240, cost: 2.0, grocery: { 'Protein Bar': 1 }, instructions: "Unwrap and enjoy." },
+            's_almonds': { name: 'Almonds', portion: '50g Almonds', p: 10, c: 10, f: 25, kcal: 290, cost: 1.0, grocery: { 'Almonds (g)': 50 }, instructions: "Eat them raw." },
+            's_eggs_rusk': { name: 'Protein Boost', portion: '2 Boiled Eggs, 2 Rusks', p: 14, c: 15, f: 10, kcal: 220, cost: 1.0, grocery: { 'Eggs': 2, 'Rusks': 2 }, instructions: "Boil eggs and serve with rusks." },
+
+            // Mains
+            'm_chicken_rice': { name: 'Chicken & Rice', portion: '200g Chicken Breast, 100g Rice', p: 60, c: 75, f: 8, kcal: 650, cost: 3.5, grocery: { 'Chicken Breast (g)': 200, 'Rice (g)': 100 }, instructions: "1. Boil rice. 2. Pan sear chicken breast with seasoning. 3. Serve together." },
+            'm_tuna_salad': { name: 'Tuna Salad', portion: '2x160g Tuna Cans, Lettuce, Oil', p: 50, c: 10, f: 15, kcal: 450, cost: 3.0, grocery: { 'Tuna Cans': 2, 'Lettuce (head)': 0.5, 'Olive Oil (ml)': 10 }, instructions: "1. Drain tuna. 2. Chop lettuce. 3. Mix in bowl with oil and lemon." },
+            'm_lentils': { name: 'Fakes (Lentils)', portion: '300g Soup, 60g Feta, Bread', p: 25, c: 50, f: 15, kcal: 500, cost: 1.5, grocery: { 'Lentils (g)': 100, 'Feta (g)': 60, 'Bread (slices)': 1 }, instructions: "1. Boil lentils with onion/bay leaf. 2. Add tomato/vinegar near end. 3. Serve with feta." },
+            'm_chicken_salad': { name: 'Chicken Salad', portion: '200g Chicken, Greens, Oil', p: 60, c: 10, f: 15, kcal: 450, cost: 3.0, grocery: { 'Chicken Breast (g)': 200, 'Greens (pack)': 0.5, 'Olive Oil (ml)': 10 }, instructions: "1. Grill chicken breast. 2. Slice and place over greens. 3. Dress with olive oil." },
+            'm_pasta_kima': { name: 'Makaronia Me Kima', portion: '150g Pasta, 150g Beef Sauce', p: 45, c: 80, f: 20, kcal: 750, cost: 3.0, grocery: { 'Pasta (g)': 150, 'Ground Beef (g)': 100, 'Tomato Sauce (g)': 100 }, instructions: "1. Brown beef with onions. 2. Add tomato sauce & simmer. 3. Boil pasta. 4. Combine." },
+            'm_dakos': { name: 'Dakos', portion: '3 Rusks, 100g Tomato, 60g Feta', p: 15, c: 40, f: 20, kcal: 450, cost: 2.0, grocery: { 'Rusks': 3, 'Tomato': 1, 'Feta (g)': 60, 'Olive Oil (ml)': 10 }, instructions: "1. Wet rusks slightly. 2. Grate tomato on top. 3. Crumble feta. 4. Drizzle oil & oregano." },
+            'm_sardines': { name: 'Grilled Sardines', portion: '250g Sardines, Horta', p: 50, c: 5, f: 25, kcal: 480, cost: 3.0, grocery: { 'Sardines (g)': 250, 'Horta (Greens) (g)': 200 }, instructions: "1. Clean sardines. 2. Grill or bake with lemon/oil for 20m. 3. Boil greens, serve with lemon." },
+            'm_spinach_omelet': { name: 'Spinach Omelet', portion: '6 Eggs, Spinach, Toast', p: 30, c: 20, f: 10, kcal: 350, cost: 2.5, grocery: { 'Eggs': 6, 'Spinach (g)': 100, 'Bread (slices)': 1 }, instructions: "1. Wilt spinach in pan. 2. Add beaten eggs. 3. Cook until set. 4. Serve with toast." },
+            'm_souvlaki': { name: 'Chicken Souvlaki', portion: '3 Skewers, 1 Pita, Tzatziki', p: 70, c: 35, f: 15, kcal: 600, cost: 4.0, grocery: { 'Chicken Skewers': 3, 'Pita Bread': 1, 'Tzatziki (g)': 50 }, instructions: "1. Grill skewers. 2. Warm pita. 3. Assemble with tzatziki." },
+            'm_gigantes': { name: 'Gigantes', portion: '300g Giant Beans, 40g Feta', p: 20, c: 50, f: 15, kcal: 450, cost: 2.0, grocery: { 'Giant Beans (g)': 100, 'Feta (g)': 40 }, instructions: "1. Soak beans overnight. 2. Boil 1hr. 3. Bake with tomato sauce/onions 1hr until soft." },
+            'm_pork_chop': { name: 'Pork Chop', portion: '250g Pork Chop, Horta', p: 60, c: 5, f: 25, kcal: 550, cost: 3.5, grocery: { 'Pork Chop (g)': 250, 'Horta (Greens) (g)': 200 }, instructions: "1. Pan fry or grill pork chop. 2. Boil greens. 3. Season with lemon/oil." },
+            'm_protein_salad': { name: 'Protein Salad', portion: 'Salad, 3 Eggs, 50g Cheese', p: 30, c: 10, f: 25, kcal: 400, cost: 2.5, grocery: { 'Greens (pack)': 0.5, 'Eggs': 3, 'Cheese (g)': 50 }, instructions: "1. Boil eggs. 2. Toss greens. 3. Cube cheese. 4. Combine." },
+            'm_roasted_chicken': { name: 'Roasted Chicken', portion: 'Half Chicken, Potatoes', p: 80, c: 40, f: 30, kcal: 800, cost: 4.0, grocery: { 'Whole Chicken': 0.5, 'Potatoes': 2 }, instructions: "1. Season chicken & potatoes. 2. Bake at 200C for 1.5hrs." },
+            'm_toast': { name: 'Toast', portion: '2 Slices Bread, Turkey, Cheese', p: 15, c: 30, f: 10, kcal: 300, cost: 1.5, grocery: { 'Bread (slices)': 2, 'Turkey Slices': 2, 'Cheese Slices': 2 }, instructions: "1. Assemble sandwich. 2. Toast in press until cheese melts." }
+        };
+
+        const DEFAULT_MEAL_PLAN = {
+            1: { b: RECIPE_POOL['b_strapatsada'], s1: RECIPE_POOL['s_fruit_nuts'], l: RECIPE_POOL['m_chicken_rice'], s2: RECIPE_POOL['s_yogurt_honey'], d: RECIPE_POOL['m_tuna_salad'] },
+            2: { b: RECIPE_POOL['b_feta_omelet'], s1: RECIPE_POOL['s_apple'], l: RECIPE_POOL['m_lentils'], s2: RECIPE_POOL['s_eggs_rusk'], d: RECIPE_POOL['m_chicken_salad'] },
+            3: { b: RECIPE_POOL['b_boiled'], s1: RECIPE_POOL['s_orange'], l: RECIPE_POOL['m_pasta_kima'], s2: RECIPE_POOL['s_protein_shake'], d: RECIPE_POOL['m_dakos'] },
+            4: { b: RECIPE_POOL['b_fried'], s1: RECIPE_POOL['s_pear'], l: RECIPE_POOL['m_sardines'], s2: RECIPE_POOL['s_yogurt_walnuts'], d: RECIPE_POOL['m_spinach_omelet'] },
+            5: { b: RECIPE_POOL['b_scrambled'], s1: RECIPE_POOL['s_kiwi'], l: RECIPE_POOL['m_souvlaki'], s2: RECIPE_POOL['s_protein_bar'], d: RECIPE_POOL['m_gigantes'] },
+            6: { b: RECIPE_POOL['b_omelet_turkey'], s1: RECIPE_POOL['s_banana'], l: RECIPE_POOL['m_pork_chop'], s2: RECIPE_POOL['s_almonds'], d: RECIPE_POOL['m_protein_salad'] },
+            0: { b: RECIPE_POOL['b_pancakes'], s1: RECIPE_POOL['s_fruit_nuts'], l: RECIPE_POOL['m_roasted_chicken'], s2: RECIPE_POOL['s_yogurt_honey'], d: RECIPE_POOL['m_toast'] }
+        };
+
+        // Updated to remove Workout and Resting
         const DEFAULT_TRACKERS = [
             { id: 'lifepulse', name: 'LifePulse', target: 3 * 3600, current: 3 * 3600, icon: HeartPulse, color: 'bg-rose-500' },
             { id: 'reading', name: 'Reading', target: 3 * 3600, current: 3 * 3600, icon: BookOpen, color: 'bg-indigo-500' },
-            { id: 'workout', name: 'Working Out', target: 1 * 3600, current: 1 * 3600, icon: Dumbbell, color: 'bg-emerald-500' },
-            { id: 'resting', name: 'Resting', target: 0, current: 0, icon: Coffee, color: 'bg-amber-500' },
         ];
 
-        function CirceApp() {
-            // --- Initialization Logic (LocalStorage) ---
-            
-            const getInitialTrackers = () => {
-                const savedDate = localStorage.getItem('circe-date');
-                const todayStr = new Date().toDateString();
-                
-                // If saved date is NOT today, return defaults (Daily Reset)
-                if (savedDate !== todayStr) {
-                    return DEFAULT_TRACKERS;
+        // --- COMPONENT: Productivity Tab ---
+        const ProductivityTab = ({ pomoState, trackersState, noteState, editState }) => {
+            const { pomoMode, pomoTime, isPomoRunning, pomoSettings, showPomoSettings, setShowPomoSettings, togglePomoTimer, resetPomoTimer, changePomoMode, updatePomoSettings } = pomoState;
+            const { trackers, activeTrackerId, toggleTracker, resetTracker, startEditingTracker } = trackersState;
+            const { noteContent, setNoteContent } = noteState;
+            const { editingTrackerId, editValues, setEditValues, saveTrackerEdit, cancelEdit } = editState;
+
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in fade-in duration-500 max-w-6xl mx-auto">
+                    <div className="space-y-6">
+                        <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-lg p-8 text-center relative overflow-hidden border border-slate-100 dark:border-slate-700">
+                            <div className="absolute top-4 right-4"><button onClick={() => setShowPomoSettings(!showPomoSettings)} className="text-slate-400 hover:text-indigo-500 transition"><Settings className="w-5 h-5" /></button></div>
+                            {showPomoSettings ? (<div className="animate-in fade-in zoom-in duration-200"><div className="flex justify-between items-center mb-4"><h3 className="font-semibold text-lg">Timer Settings</h3><button onClick={() => { setShowPomoSettings(false); resetPomoTimer(); }}><X className="w-5 h-5" /></button></div><div className="space-y-4 text-left">{['work', 'shortBreak', 'longBreak'].map(type => (<div key={type}><label className="text-xs uppercase font-bold text-slate-400">{type.replace(/([A-Z])/g, ' $1').trim()} (min)</label><input type="number" name={type} value={pomoSettings[type]} onChange={updatePomoSettings} className="w-full mt-1 p-2 bg-slate-100 dark:bg-slate-700 rounded-lg" /></div>))}</div></div>) : (<><div className="flex justify-center gap-2 mb-8">{['work', 'shortBreak', 'longBreak'].map((mode) => (<button key={mode} onClick={() => changePomoMode(mode)} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${pomoMode === mode ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}>{mode === 'work' ? 'Focus' : mode === 'shortBreak' ? 'Short Break' : 'Long Break'}</button>))}</div><div className="text-7xl font-mono font-bold tracking-tighter text-slate-800 dark:text-slate-100 mb-8">{formatTime(pomoTime)}</div><div className="flex justify-center gap-4"><button onClick={togglePomoTimer} className="w-14 h-14 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center shadow-lg shadow-indigo-200 dark:shadow-none transition-transform hover:scale-105 active:scale-95">{isPomoRunning ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current ml-1" />}</button><button onClick={resetPomoTimer} className="w-14 h-14 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-600 transition"><RotateCcw className="w-5 h-5" /></button></div></>)}
+                        </div>
+                        <div className="bg-yellow-50 dark:bg-yellow-900/10 rounded-2xl shadow-sm border border-yellow-100 dark:border-yellow-900/30 overflow-hidden flex flex-col h-[400px] relative"><div className="p-4 border-b border-yellow-100 dark:border-yellow-900/30 flex justify-between items-center bg-yellow-50 dark:bg-yellow-900/20 z-10"><h2 className="text-xl font-semibold flex items-center gap-2 text-yellow-800 dark:text-yellow-500"><StickyNote className="w-5 h-5" /><span>Notes</span></h2><PenLine className="w-4 h-4 text-yellow-600 dark:text-yellow-500 opacity-50" /></div><div className="flex-1 relative p-0"><textarea value={noteContent} onChange={(e) => setNoteContent(e.target.value)} placeholder="Type your thoughts here..." className="w-full h-full p-6 bg-transparent resize-none focus:outline-none text-slate-700 dark:text-slate-200 text-sm leading-relaxed" style={{ backgroundImage: 'linear-gradient(transparent 31px, rgba(0,0,0,0.05) 32px)', backgroundSize: '100% 32px', lineHeight: '32px' }} /></div></div>
+                    </div>
+                    {/* Trackers - Vertical Stack */}
+                    <div>
+                        <div className="flex flex-col gap-6">{trackers.map((tracker) => (<div key={tracker.id} className={`relative rounded-2xl p-6 border transition-all duration-300 flex flex-col justify-between h-[250px] ${activeTrackerId === tracker.id ? 'bg-white dark:bg-slate-800 border-indigo-500 shadow-md ring-1 ring-indigo-500' : 'bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-700 shadow-sm hover:shadow-md'}`}>{editingTrackerId === tracker.id ? (<div className="h-full flex flex-col justify-center animate-in fade-in"><h3 className="font-semibold text-lg mb-4 flex items-center gap-2"><tracker.icon className="w-5 h-5" /> Edit {tracker.name}</h3><div className="grid grid-cols-2 gap-4 mb-6"><div><label className="text-xs uppercase font-bold text-slate-400">Hours</label><input type="number" min="0" value={editValues.hours} onChange={(e) => setEditValues({...editValues, hours: e.target.value})} className="w-full mt-1 p-3 bg-slate-100 dark:bg-slate-700 rounded-lg text-lg font-mono" /></div><div><label className="text-xs uppercase font-bold text-slate-400">Minutes</label><input type="number" min="0" max="59" value={editValues.minutes} onChange={(e) => setEditValues({...editValues, minutes: e.target.value})} className="w-full mt-1 p-3 bg-slate-100 dark:bg-slate-700 rounded-lg text-lg font-mono" /></div></div><div className="flex gap-2"><button onClick={() => saveTrackerEdit(tracker.id)} className="flex-1 py-2 bg-indigo-500 text-white rounded-lg flex items-center justify-center gap-2 hover:bg-indigo-600 transition"><Check className="w-4 h-4" /> Save</button><button onClick={cancelEdit} className="flex-1 py-2 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg flex items-center justify-center gap-2 hover:bg-slate-200 dark:hover:bg-slate-600 transition"><X className="w-4 h-4" /> Cancel</button></div></div>) : (<><div className="absolute top-4 right-4 z-10"><button onClick={(e) => startEditingTracker(tracker, e)} className="p-1.5 text-slate-300 hover:text-indigo-500 dark:text-slate-600 dark:hover:text-indigo-400 transition" title="Edit Goal"><Settings className="w-4 h-4" /></button></div><div className="flex justify-between items-start mb-4"><div className={`p-3 rounded-xl ${tracker.color} bg-opacity-10 text-${tracker.color.split('-')[1]}-600 dark:text-${tracker.color.split('-')[1]}-400`}><tracker.icon className={`w-6 h-6 text-${tracker.color.split('-')[1]}-600`} /></div><div className="text-right pr-6"><span className="block text-2xl font-mono font-semibold">{Math.floor(tracker.current / 3600)}h {Math.floor((tracker.current % 3600) / 60)}m</span><span className="text-xs text-slate-400">{tracker.target > 0 ? 'Remaining' : 'Elapsed'}</span></div></div><div><h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-1">{tracker.name}</h3><div className="flex items-center justify-between text-xs text-slate-400 mb-3">{tracker.target > 0 ? <span>{Math.round((tracker.current / tracker.target) * 100)}% Left</span> : <span>Open-ended session</span>}{tracker.current !== (tracker.target > 0 ? tracker.target : 0) && (<button onClick={(e) => { e.stopPropagation(); resetTracker(tracker.id); }} className="hover:text-rose-500 transition-colors p-1" title="Reset Timer"><RotateCcw className="w-3.5 h-3.5" /></button>)}</div>{tracker.target > 0 && (<ProgressBar current={tracker.current} target={tracker.target} colorClass={tracker.color} />)}</div><div className="mt-6"><button onClick={() => toggleTracker(tracker.id)} className={`w-full py-3 rounded-xl font-medium flex items-center justify-center gap-2 transition-colors ${activeTrackerId === tracker.id ? 'bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/30' : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}>{activeTrackerId === tracker.id ? <><Pause className="w-4 h-4" /> Pause</> : <><Play className="w-4 h-4" /> Start</>}</button></div></>)}</div>))}</div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- COMPONENT: Gym Tab ---
+        const GymTab = ({ startDate, progress, setProgress, environment, setEnvironment, shiftSchedule }) => {
+            const [view, setView] = useState('day'); 
+            const [selectedDate, setSelectedDate] = useState(new Date());
+            const [gymTimerMode, setGymTimerMode] = useState('work'); 
+            const [gymWorkDuration, setGymWorkDuration] = useState(45);
+            const [gymRestDuration, setGymRestDuration] = useState(60);
+            const [gymTimerTime, setGymTimerTime] = useState(45); 
+            const [isGymTimerRunning, setIsGymTimerRunning] = useState(false);
+            const [showGymTimerSettings, setShowGymTimerSettings] = useState(false);
+
+            useEffect(() => {
+                let interval = null;
+                if (isGymTimerRunning && gymTimerTime > 0) {
+                    interval = setInterval(() => setGymTimerTime(t => t - 1), 1000);
+                } else if (gymTimerTime === 0 && isGymTimerRunning) {
+                    if (gymTimerMode === 'work') { setGymTimerMode('rest'); setGymTimerTime(gymRestDuration); } 
+                    else { setIsGymTimerRunning(false); setGymTimerMode('work'); setGymTimerTime(gymWorkDuration); }
                 }
-                
-                // Otherwise load progress
-                const savedTrackers = localStorage.getItem('circe-trackers');
-                return savedTrackers ? JSON.parse(savedTrackers) : DEFAULT_TRACKERS;
+                return () => clearInterval(interval);
+            }, [isGymTimerRunning, gymTimerTime, gymTimerMode, gymRestDuration, gymWorkDuration]);
+
+            const toggleGymTimer = () => setIsGymTimerRunning(!isGymTimerRunning);
+            const resetGymTimer = () => { setIsGymTimerRunning(false); setGymTimerMode('work'); setGymTimerTime(gymWorkDuration); };
+            const updateGymTimerSettings = (e) => {
+                const val = parseInt(e.target.value) || 0;
+                if (e.target.name === 'work') { setGymWorkDuration(val); if (!isGymTimerRunning && gymTimerMode === 'work') setGymTimerTime(val); }
+                else { setGymRestDuration(val); if (!isGymTimerRunning && gymTimerMode === 'rest') setGymTimerTime(val); }
             };
 
-            const getInitialState = (key, defaultValue) => {
-                const saved = localStorage.getItem(key);
-                return saved ? JSON.parse(saved) : defaultValue;
+            const today = new Date();
+            today.setHours(0,0,0,0);
+            const envOptions = [ { id: 'gym', label: 'Gym', icon: Warehouse }, { id: 'home', label: 'Home', icon: Home }, { id: 'body', label: 'No Equip', icon: PersonStanding } ];
+            const shiftDate = (amount, unit) => { const newDate = new Date(selectedDate); if (unit === 'day') newDate.setDate(newDate.getDate() + amount); if (unit === 'week') newDate.setDate(newDate.getDate() + (amount * 7)); if (unit === 'month') newDate.setMonth(newDate.getMonth() + amount); setSelectedDate(newDate); };
+            const resetToToday = () => setSelectedDate(today);
+            const handleCompleteExercise = (exerciseId, startWeight, startReps, isTime) => {
+                const currentData = progress[exerciseId] || { reps: startReps, weight: startWeight }; 
+                let { reps, weight } = currentData;
+                let nextReps = reps;
+                let nextWeight = weight;
+                let step = 2;
+                let maxReps = startReps + 4; 
+                if (startReps >= 15 && !isTime) { step = 5; maxReps = startReps + 10; }
+                if (isTime) { if (startReps >= 30) { step = 15; maxReps = startReps + 45; } else { step = 2; maxReps = startReps + 10; } }
+                if (reps < maxReps) { nextReps = reps + step; } else { nextReps = startReps; nextWeight = weight + 2.5; }
+                setProgress(prev => ({ ...prev, [exerciseId]: { reps: nextReps, weight: nextWeight } }));
             };
+            const renderDayView = () => { const workout = getWorkoutType(selectedDate, startDate); const isRest = workout.type === 'rest'; const program = isRest ? [] : WORKOUT_DATA[environment][workout.type]; return (<div className="space-y-6 animate-in slide-in-from-bottom-4 fade-in duration-300"><div className={`p-6 rounded-2xl border-l-8 ${workout.borderMain} bg-white dark:bg-slate-800 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4`}><div><h2 className="text-2xl font-bold mb-1">{workout.label}</h2><div className="flex items-center gap-2 text-slate-500 dark:text-slate-400"><span className="capitalize">{selectedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</span></div></div><div className="flex items-center gap-2 w-full md:w-auto">{!isRest && (<div className="px-3 py-1 bg-slate-100 dark:bg-slate-700 rounded-full text-xs font-bold uppercase text-slate-500 flex items-center gap-1 whitespace-nowrap">{envOptions.find(e => e.id === environment)?.label}</div>)}<button onClick={shiftSchedule} className="ml-auto md:ml-0 px-3 py-1.5 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1 transition-colors" title="Move entire schedule forward by 1 day"><ArrowRight className="w-3 h-3" /> Postpone</button></div></div>{!isRest && (<div className="grid grid-cols-1 md:grid-cols-2 gap-4">{program.map(ex => { const userProg = progress[ex.id] || { reps: ex.startReps, weight: ex.startWeight }; return (<div key={ex.id} className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-100 dark:border-slate-700 shadow-sm flex flex-col justify-between"><div className="flex justify-between items-start mb-4"><h3 className="font-bold text-lg truncate pr-2">{ex.name}</h3><div className="bg-slate-100 dark:bg-slate-700 px-2 py-1 rounded text-xs font-mono shrink-0">Target</div></div><div className="flex items-center gap-6 mb-6 justify-center"><div className="text-center"><div className="text-2xl font-bold text-indigo-600 dark:text-indigo-400 flex items-center justify-center gap-1">{ex.isTime && <Timer className="w-4 h-4 text-slate-300" />}{userProg.reps}</div><div className="text-xs text-slate-400 uppercase font-bold">{ex.isTime && ex.startReps >= 30 ? 'Secs' : (ex.isTime ? 'Mins' : 'Reps')}</div></div><div className="h-8 w-px bg-slate-200 dark:bg-slate-600"></div><div className="text-center"><div className="text-2xl font-bold text-indigo-600 dark:text-indigo-400 flex items-center justify-center gap-1">{userProg.weight > 0 && <Weight className="w-4 h-4 text-slate-300" />}{userProg.weight}</div><div className="text-xs text-slate-400 uppercase font-bold">Kg</div></div></div><button onClick={() => handleCompleteExercise(ex.id, ex.startWeight, ex.startReps, ex.isTime)} className="w-full py-2 bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 text-indigo-600 dark:text-indigo-300 rounded-lg flex items-center justify-center gap-2 transition active:scale-95"><CheckCircle2 className="w-4 h-4" /> Complete & Progress</button><p className="text-[10px] text-center text-slate-400 mt-2">{environment === 'body' && userProg.weight > 0 ? "Use a weighted vest or backpack." : "Clicking completes set & increases target."}</p></div>);})}</div>)}{isRest && (<div className="bg-white dark:bg-slate-800 rounded-2xl p-12 text-center border-2 border-dashed border-slate-200 dark:border-slate-700"><Coffee className="w-12 h-12 mx-auto text-slate-300 mb-4" /><h3 className="text-xl font-bold text-slate-400">Rest & Recover</h3><p className="text-slate-500">Take a break today. Your muscles grow while you rest.</p><div className="mt-6 pt-6 border-t border-slate-100 dark:border-slate-700 flex justify-center gap-8"><div className="text-center"><div className="text-sm font-bold text-slate-600 dark:text-slate-300 flex items-center justify-center gap-1"><Activity className="w-4 h-4 text-emerald-500" /> Active Recovery</div><div className="text-xs text-slate-400">Walking / Stretching</div></div></div></div>)}</div>); };
+            const renderMonthView = () => { const year = selectedDate.getFullYear(); const month = selectedDate.getMonth(); const firstDay = new Date(year, month, 1); const lastDay = new Date(year, month + 1, 0); const daysInMonth = lastDay.getDate(); const startDayOffset = firstDay.getDay() === 0 ? 6 : firstDay.getDay() - 1; const days = []; for (let i = 0; i < startDayOffset; i++) days.push(null); for (let i = 1; i <= daysInMonth; i++) days.push(new Date(year, month, i)); return (<div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm p-6 animate-in fade-in"><div className="grid grid-cols-7 gap-2 mb-2 text-center">{['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d,i) => (<div key={i} className="text-xs font-bold text-slate-400">{d}</div>))}</div><div className="grid grid-cols-7 gap-2">{days.map((date, idx) => { if (!date) return <div key={idx} className="aspect-square"></div>; const isSelected = date.toDateString() === selectedDate.toDateString(); const isToday = date.toDateString() === today.toDateString(); return (<button key={idx} onClick={() => { setSelectedDate(date); setView('day'); }} className={`aspect-square rounded-lg flex flex-col items-center justify-center p-1 relative border transition hover:scale-105 ${isSelected ? 'ring-2 ring-indigo-500 z-10' : ''} ${isToday ? 'bg-slate-100 dark:bg-slate-700' : 'bg-transparent'} ${workout.border}`}><span className={`text-xs font-medium mb-1 ${isToday ? 'text-indigo-600 font-bold' : ''}`}>{date.getDate()}</span><div className={`w-2 h-2 rounded-full ${workout.color}`}></div></button>); })}</div></div>); };
+            const renderWeekView = () => { const d = new Date(selectedDate); const day = d.getDay(); const diff = d.getDate() - day + (day === 0 ? -6 : 1); const monday = new Date(d.setDate(diff)); const weekDays = []; for (let i = 0; i < 7; i++) { const temp = new Date(monday); temp.setDate(monday.getDate() + i); weekDays.push(temp); } return (<div className="space-y-4 animate-in fade-in">{weekDays.map((date, idx) => { const workout = getWorkoutType(date, startDate); const isSelected = date.toDateString() === selectedDate.toDateString(); const isToday = date.toDateString() === today.toDateString(); return (<button key={idx} onClick={() => { setSelectedDate(date); setView('day'); }} className={`w-full p-4 rounded-xl flex items-center justify-between border transition ${isSelected ? 'ring-2 ring-indigo-500 bg-indigo-50 dark:bg-indigo-900/10' : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50'} ${isToday ? 'border-l-4 border-l-indigo-500' : 'border-slate-100 dark:border-slate-700'}`}><div className="flex items-center gap-4"><div className="text-center w-12"><div className="text-xs text-slate-400 uppercase font-bold">{date.toLocaleDateString('en-US', { weekday: 'short' })}</div><div className="text-lg font-bold">{date.getDate()}</div></div><div className={`px-3 py-1 rounded-full text-xs font-bold ${workout.color} bg-opacity-10 ${workout.text}`}>{workout.label}</div></div>{isSelected && <CheckCircle2 className="w-5 h-5 text-indigo-500" />}</button>); })}</div>); };
 
-            // --- State ---
-            const [currentDate, setCurrentDate] = useState(new Date());
-            const [isDarkMode, setIsDarkMode] = useState(() => getInitialState('circe-darkmode', true));
+            return (
+                <div className="animate-in fade-in duration-500">
+                    <div className="mb-6 bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm border border-slate-100 dark:border-slate-700 relative overflow-hidden"><div className={`absolute bottom-0 left-0 h-1 transition-all duration-1000 ${gymTimerMode === 'work' ? 'bg-emerald-500' : 'bg-blue-500'}`} style={{ width: `${(gymTimerTime / (gymTimerMode === 'work' ? gymWorkDuration : gymRestDuration)) * 100}%` }}></div><div className="flex justify-between items-start mb-4"><div className="flex items-center gap-2"><Timer className={`w-5 h-5 ${isGymTimerRunning ? 'animate-pulse text-indigo-500' : 'text-slate-400'}`} /><h3 className="font-bold text-slate-700 dark:text-slate-200">Set Timer</h3></div><button onClick={() => setShowGymTimerSettings(!showGymTimerSettings)} className="text-slate-400 hover:text-indigo-500 transition"><Settings className="w-4 h-4" /></button></div>{showGymTimerSettings ? (<div className="animate-in fade-in zoom-in duration-200 mb-2"><div className="grid grid-cols-2 gap-4 mb-4"><div><label className="text-xs uppercase font-bold text-emerald-600 dark:text-emerald-400">Work (Secs)</label><input type="number" name="work" value={gymWorkDuration} onChange={updateGymTimerSettings} className="w-full mt-1 p-2 bg-slate-100 dark:bg-slate-700 rounded-lg" /></div><div><label className="text-xs uppercase font-bold text-blue-600 dark:text-blue-400">Rest (Secs)</label><input type="number" name="rest" value={gymRestDuration} onChange={updateGymTimerSettings} className="w-full mt-1 p-2 bg-slate-100 dark:bg-slate-700 rounded-lg" /></div></div><button onClick={() => setShowGymTimerSettings(false)} className="w-full py-2 bg-slate-100 dark:bg-slate-700 rounded-lg text-xs font-bold">Done</button></div>) : (<div className="flex items-center justify-between gap-4"><div className="text-left"><div className={`text-3xl font-mono font-bold tracking-tight ${gymTimerMode === 'work' ? 'text-emerald-500' : 'text-blue-500'}`}>{formatTime(gymTimerTime).substring(3)} <span className="text-xs text-slate-400 font-sans font-normal uppercase ml-1">{gymTimerMode}</span></div></div><div className="flex gap-2"><button onClick={toggleGymTimer} className={`w-12 h-12 rounded-full flex items-center justify-center shadow-md transition-all active:scale-95 ${isGymTimerRunning ? 'bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400' : (gymTimerMode === 'work' ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400')}`}>{isGymTimerRunning ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-1" />}</button><button onClick={resetGymTimer} className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-600 transition"><RotateCcw className="w-4 h-4" /></button></div></div>)}</div>
+                    <div className="mb-6 bg-slate-100 dark:bg-slate-800 p-1.5 rounded-xl flex gap-1">{envOptions.map(opt => (<button key={opt.id} onClick={() => setEnvironment(opt.id)} className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-bold transition-all ${environment === opt.id ? 'bg-white dark:bg-slate-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'}`}><opt.icon className="w-4 h-4" />{opt.label}</button>))}</div>
+                    <div className="flex flex-col sm:flex-row justify-between items-center mb-6 gap-4"><div className="flex items-center bg-white dark:bg-slate-800 rounded-lg p-1 shadow-sm border border-slate-100 dark:border-slate-700">{['day', 'week', 'month'].map(v => (<button key={v} onClick={() => setView(v)} className={`px-4 py-1.5 rounded-md text-sm font-medium capitalize transition-all ${view === v ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'}`}>{v}</button>))}</div><div className="flex items-center gap-2 bg-white dark:bg-slate-800 rounded-lg p-1 shadow-sm border border-slate-100 dark:border-slate-700"><button onClick={() => shiftDate(-1, view)} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md"><ChevronLeft className="w-5 h-5 text-slate-500" /></button><button onClick={resetToToday} className="px-3 py-1 text-sm font-bold text-slate-600 dark:text-slate-300 min-w-[120px] text-center">{view === 'day' && selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}{view !== 'day' && selectedDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</button><button onClick={() => shiftDate(1, view)} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md"><ChevronRight className="w-5 h-5 text-slate-500" /></button></div></div>
+                    <div className="min-h-[400px]">{view === 'day' && renderDayView()}{view === 'week' && renderWeekView()}{view === 'month' && renderMonthView()}</div>
+                </div>
+            );
+        };
+
+        // --- COMPONENT: Nutrition Tab ---
+        const NutritionTab = ({ nutritionProgress, setNutritionProgress, bodyWeight, setBodyWeight, mealPlan, setMealPlan }) => {
+            const [view, setView] = useState('day');
+            const [selectedDate, setSelectedDate] = useState(new Date());
+            const [isEditingWeight, setIsEditingWeight] = useState(false);
+            const [tempWeight, setTempWeight] = useState(bodyWeight);
+            const [editMealId, setEditMealId] = useState(null); 
+            const [editAction, setEditAction] = useState(null); 
+            const [tempMealData, setTempMealData] = useState({});
+            const [showGroceries, setShowGroceries] = useState(false);
             
-            // Gamification State
-            const [streak, setStreak] = useState(() => getInitialState('circe-streak', 0));
-            const [lastStreakDate, setLastStreakDate] = useState(() => localStorage.getItem('circe-lastStreakDate') || '');
-            const [goalsMetToday, setGoalsMetToday] = useState(false);
+            // Recipe View State
+            const [viewingRecipe, setViewingRecipe] = useState(null); // holds the meal data to view
 
-            // Pomodoro State
+            const today = new Date();
+            today.setHours(0,0,0,0);
+
+            const shiftDate = (amount, unit) => { const newDate = new Date(selectedDate); if (unit === 'day') newDate.setDate(newDate.getDate() + amount); if (unit === 'week') newDate.setDate(newDate.getDate() + (amount * 7)); if (unit === 'month') newDate.setMonth(newDate.getMonth() + amount); setSelectedDate(newDate); };
+            const resetToToday = () => setSelectedDate(today);
+            const toggleMeal = (dateStr, mealId) => { const currentMeals = nutritionProgress[dateStr] || []; const newMeals = currentMeals.includes(mealId) ? currentMeals.filter(id => id !== mealId) : [...currentMeals, mealId]; setNutritionProgress({...nutritionProgress, [dateStr]: newMeals}); };
+            const saveWeight = () => { const val = parseFloat(tempWeight); if (!isNaN(val) && val > 0) { setBodyWeight(val); } else { setTempWeight(bodyWeight); } setIsEditingWeight(false); };
+            const getTargets = () => ({ p: Math.round(bodyWeight * 2.2), c: 300, f: 90, kcal: 2800 });
+
+            // Swap/Edit Logic
+            const openEdit = (mealType, data) => { setEditMealId(mealType); setEditAction('edit'); setTempMealData({...data}); };
+            const openSwap = (mealType) => { setEditMealId(mealType); setEditAction('swap'); };
+            const closeEdit = () => { setEditMealId(null); setEditAction(null); };
+            
+            const saveEdit = () => {
+                const day = selectedDate.getDay();
+                setMealPlan(prev => ({
+                    ...prev,
+                    [day]: { ...prev[day], [editMealId]: tempMealData }
+                }));
+                closeEdit();
+            };
+
+            const doSwap = (newRecipeKey) => {
+                const newMeal = RECIPE_POOL[newRecipeKey];
+                const day = selectedDate.getDay();
+                setMealPlan(prev => ({
+                    ...prev,
+                    [day]: { ...prev[day], [editMealId]: newMeal }
+                }));
+                closeEdit();
+            };
+
+            const getRandomRecipeKey = (currentKey, typePrefix) => {
+                const keys = Object.keys(RECIPE_POOL).filter(k => k.startsWith(typePrefix) && k !== currentKey);
+                if (keys.length === 0) return currentKey;
+                return keys[Math.floor(Math.random() * keys.length)];
+            };
+
+            const swapRandomly = () => {
+                let prefix = 'm_';
+                if (editMealId === 'b') prefix = 'b_';
+                if (editMealId === 's1' || editMealId === 's2') prefix = 's_';
+                
+                const keys = Object.keys(RECIPE_POOL).filter(k => k.startsWith(prefix));
+                const randomKey = keys[Math.floor(Math.random() * keys.length)];
+                doSwap(randomKey);
+            };
+
+            const calculateDailyMacros = () => {
+                const dayOfWeek = selectedDate.getDay();
+                const plan = mealPlan[dayOfWeek];
+                const dateStr = selectedDate.toDateString();
+                const completedMeals = nutritionProgress[dateStr] || [];
+                let totals = { p: 0, c: 0, f: 0, kcal: 0 };
+                completedMeals.forEach(mealId => { const meal = plan[mealId]; if (meal) { totals.p += meal.p; totals.c += meal.c; totals.f += meal.f; totals.kcal += meal.kcal; } });
+                return totals;
+            };
+
+            const generateGroceryList = () => {
+                const ingredientsMap = {};
+                let totalCost = 0;
+                Object.values(mealPlan).forEach(dayPlan => {
+                    Object.values(dayPlan).forEach(meal => {
+                        if (meal.grocery) {
+                            Object.entries(meal.grocery).forEach(([item, qty]) => {
+                                ingredientsMap[item] = (ingredientsMap[item] || 0) + qty;
+                            });
+                        }
+                        if (meal.cost) totalCost += meal.cost;
+                    });
+                });
+                return { ingredients: ingredientsMap, totalCost };
+            };
+
+            const renderGroceryView = () => {
+                const { ingredients, totalCost } = generateGroceryList();
+                const sortedIngredients = Object.entries(ingredients).sort((a,b) => b[1] - a[1]);
+                return (
+                    <div className="animate-in fade-in slide-in-from-bottom-4">
+                        <div className="flex justify-between items-center mb-6">
+                            <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2"><ShoppingCart className="w-6 h-6 text-indigo-500" /> Weekly List</h2>
+                            <button onClick={() => setShowGroceries(false)} className="text-sm font-bold text-indigo-500 hover:underline">Back to Plan</button>
+                        </div>
+                        <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-sm border border-slate-100 dark:border-slate-700 mb-6">
+                            <div className="text-center">
+                                <div className="text-slate-500 text-xs uppercase font-bold mb-1">Estimated Cost (Greece)</div>
+                                <div className="text-3xl font-mono font-bold text-emerald-600 dark:text-emerald-400">€{totalCost.toFixed(2)}</div>
+                                <div className="text-xs text-slate-400 mt-2">Based on current weekly plan</div>
+                            </div>
+                        </div>
+                        <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700 overflow-hidden">
+                            <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50"><h3 className="font-bold text-sm text-slate-600 dark:text-slate-300">Items Needed</h3></div>
+                            <div className="divide-y divide-slate-100 dark:divide-slate-700">
+                                {sortedIngredients.map(([name, count]) => (
+                                    <div key={name} className="p-4 flex justify-between items-center"><span className="font-medium text-slate-700 dark:text-slate-200">{name}</span><span className="text-xs font-bold bg-slate-100 dark:bg-slate-700 text-slate-500 px-2 py-1 rounded-full">{count} {name.includes('(g)') || name.includes('(ml)') ? '' : 'qty'}</span></div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            const renderRecipeModal = () => {
+                if (!viewingRecipe) return null;
+                const { name, instructions, grocery } = viewingRecipe;
+                
+                return (
+                    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-in fade-in">
+                        <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-md max-h-[80vh] overflow-y-auto shadow-2xl relative">
+                            <button onClick={() => setViewingRecipe(null)} className="absolute top-4 right-4 p-2 bg-slate-100 dark:bg-slate-700 rounded-full hover:bg-slate-200"><X className="w-5 h-5 text-slate-500" /></button>
+                            
+                            <div className="p-6">
+                                <div className="flex items-center gap-3 mb-6">
+                                    <div className="p-3 bg-indigo-100 dark:bg-indigo-900/30 rounded-xl text-indigo-600 dark:text-indigo-400"><ChefHat className="w-8 h-8" /></div>
+                                    <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-100 leading-tight">{name}</h2>
+                                </div>
+                                
+                                <div className="space-y-6">
+                                    <div>
+                                        <h3 className="text-sm font-bold uppercase text-slate-400 tracking-wider mb-3">Ingredients</h3>
+                                        <div className="bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700 rounded-xl p-4 space-y-2">
+                                            {grocery ? Object.entries(grocery).map(([item, qty]) => (
+                                                <div key={item} className="flex justify-between items-center text-sm">
+                                                    <span className="text-slate-700 dark:text-slate-300 font-medium">{item}</span>
+                                                    <span className="font-mono text-slate-500">{qty}</span>
+                                                </div>
+                                            )) : <p className="text-slate-400 text-sm">No specific ingredients listed.</p>}
+                                        </div>
+                                    </div>
+                                    
+                                    <div>
+                                        <h3 className="text-sm font-bold uppercase text-slate-400 tracking-wider mb-3">Instructions</h3>
+                                        <div className="text-slate-700 dark:text-slate-300 text-sm leading-relaxed space-y-2">
+                                            {instructions ? instructions.split(/\d+\./).filter(Boolean).map((step, i) => (
+                                                <div key={i} className="flex gap-3">
+                                                    <span className="font-bold text-indigo-500 shrink-0">{i+1}.</span>
+                                                    <span>{step.trim()}</span>
+                                                </div>
+                                            )) : <p className="text-slate-400 italic">No instructions available.</p>}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            if (showGroceries) return renderGroceryView();
+
+            const renderDayView = () => {
+                const dayOfWeek = selectedDate.getDay();
+                const plan = mealPlan[dayOfWeek];
+                const dateStr = selectedDate.toDateString();
+                const completedMeals = nutritionProgress[dateStr] || [];
+                const totals = calculateDailyMacros();
+                const targets = getTargets();
+
+                return (
+                    <div className="space-y-6 animate-in slide-in-from-bottom-4 fade-in duration-300">
+                        {renderRecipeModal()}
+                        
+                        <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-sm border border-slate-100 dark:border-slate-700">
+                            <div className="flex justify-between items-end mb-4">
+                                <div><h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">Daily Targets</h2><div className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer hover:text-indigo-500 transition-colors" onClick={() => setIsEditingWeight(true)}>{isEditingWeight ? <input type="number" autoFocus className="w-16 bg-slate-100 dark:bg-slate-700 rounded px-1 text-xs" value={tempWeight} onChange={(e) => setTempWeight(e.target.value)} onBlur={saveWeight} onKeyDown={(e) => e.key === 'Enter' && saveWeight()} /> : <span>Based on {bodyWeight}kg, 186cm</span>}{!isEditingWeight && <Edit2 className="w-3 h-3" />}</div></div>
+                                <div className="text-right"><div className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">{totals.kcal} <span className="text-sm text-slate-400 font-normal">/ {targets.kcal} kcal</span></div></div>
+                            </div>
+                            <div className="grid grid-cols-3 gap-4">
+                                <div className="space-y-1"><div className="flex justify-between text-xs font-bold text-slate-500"><span>Protein</span><span>{totals.p}/{targets.p}g</span></div><div className="h-2 w-full bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden"><div className="h-full bg-rose-500 rounded-full" style={{ width: `${Math.min((totals.p / targets.p) * 100, 100)}%` }}></div></div></div>
+                                <div className="space-y-1"><div className="flex justify-between text-xs font-bold text-slate-500"><span>Carbs</span><span>{totals.c}/{targets.c}g</span></div><div className="h-2 w-full bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden"><div className="h-full bg-amber-500 rounded-full" style={{ width: `${Math.min((totals.c / targets.c) * 100, 100)}%` }}></div></div></div>
+                                <div className="space-y-1"><div className="flex justify-between text-xs font-bold text-slate-500"><span>Fats</span><span>{totals.f}/{targets.f}g</span></div><div className="h-2 w-full bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden"><div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.min((totals.f / targets.f) * 100, 100)}%` }}></div></div></div>
+                            </div>
+                        </div>
+
+                        <div className="p-4 rounded-2xl bg-orange-50 dark:bg-orange-900/10 border border-orange-100 dark:border-orange-900/30 flex justify-between items-center">
+                            <div><h3 className="font-bold text-orange-800 dark:text-orange-400">Meal Schedule</h3><p className="text-xs text-orange-600 dark:text-orange-500 capitalize">{selectedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p></div>
+                            <button onClick={() => setShowGroceries(true)} className="p-2 hover:bg-orange-100 dark:hover:bg-orange-800/30 rounded-lg text-orange-600 transition" title="Grocery List"><ShoppingCart className="w-5 h-5" /></button>
+                        </div>
+
+                        <div className="space-y-3">
+                            {[{ id: 'b', label: 'Breakfast', icon: '🍳' }, { id: 's1', label: 'Morning Snack', icon: '🍎' }, { id: 'l', label: 'Lunch', icon: '🍲' }, { id: 's2', label: 'Afternoon Snack', icon: '🥜' }, { id: 'd', label: 'Dinner', icon: '🥗' }].map(slot => {
+                                const mealData = plan[slot.id];
+                                const isDone = completedMeals.includes(slot.id);
+                                const isEditingThis = editMealId === slot.id;
+
+                                if (isEditingThis && editAction === 'edit') {
+                                    return (
+                                        <div key={slot.id} className="p-4 rounded-xl border bg-white dark:bg-slate-800 shadow-lg ring-2 ring-indigo-500 animate-in zoom-in-95">
+                                            <div className="mb-3 font-bold text-sm uppercase text-slate-400">Edit {slot.label}</div>
+                                            <input type="text" className="w-full mb-2 p-2 border rounded dark:bg-slate-700 dark:border-slate-600" value={tempMealData.name} onChange={e => setTempMealData({...tempMealData, name: e.target.value})} placeholder="Meal Name" />
+                                            <input type="text" className="w-full mb-2 p-2 border rounded dark:bg-slate-700 dark:border-slate-600" value={tempMealData.portion} onChange={e => setTempMealData({...tempMealData, portion: e.target.value})} placeholder="Portion (e.g. 200g)" />
+                                            <div className="grid grid-cols-4 gap-2 mb-4">
+                                                <input type="number" className="p-2 border rounded dark:bg-slate-700" value={tempMealData.p} onChange={e => setTempMealData({...tempMealData, p: parseInt(e.target.value)||0})} placeholder="P" />
+                                                <input type="number" className="p-2 border rounded dark:bg-slate-700" value={tempMealData.c} onChange={e => setTempMealData({...tempMealData, c: parseInt(e.target.value)||0})} placeholder="C" />
+                                                <input type="number" className="p-2 border rounded dark:bg-slate-700" value={tempMealData.f} onChange={e => setTempMealData({...tempMealData, f: parseInt(e.target.value)||0})} placeholder="F" />
+                                                <input type="number" className="p-2 border rounded dark:bg-slate-700" value={tempMealData.kcal} onChange={e => setTempMealData({...tempMealData, kcal: parseInt(e.target.value)||0})} placeholder="Kcal" />
+                                            </div>
+                                            <div className="flex gap-2"><button onClick={saveEdit} className="flex-1 py-2 bg-indigo-500 text-white rounded font-bold">Save</button><button onClick={closeEdit} className="flex-1 py-2 bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded font-bold">Cancel</button></div>
+                                        </div>
+                                    );
+                                }
+
+                                return (
+                                    <div key={slot.id} className={`relative p-4 rounded-xl border transition-all flex flex-col gap-2 group ${isDone ? 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 opacity-70' : 'bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-700 hover:border-indigo-200'}`}>
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-4 cursor-pointer flex-1" onClick={() => toggleMeal(dateStr, slot.id)}>
+                                                <div className="text-2xl">{slot.icon}</div>
+                                                <div>
+                                                    <div className="text-[10px] font-bold uppercase text-slate-400 tracking-wider mb-0.5">{slot.label}</div>
+                                                    <div className={`font-bold text-lg ${isDone ? 'text-slate-500 line-through' : 'text-slate-800 dark:text-slate-200'}`}>{mealData.name}</div>
+                                                </div>
+                                            </div>
+                                            <div className="flex gap-2 items-center">
+                                                {/* Action Buttons */}
+                                                {!isDone && (
+                                                    <>
+                                                        <button onClick={() => setViewingRecipe(mealData)} className="p-1.5 text-slate-300 hover:text-indigo-500 transition" title="View Recipe"><BookOpen className="w-4 h-4" /></button>
+                                                        <button onClick={() => openSwap(slot.id)} className="p-1.5 text-slate-300 hover:text-indigo-500 transition" title="Swap Randomly"><RefreshCw className="w-4 h-4" /></button>
+                                                        <button onClick={() => openEdit(slot.id, mealData)} className="p-1.5 text-slate-300 hover:text-indigo-500 transition" title="Edit Meal"><Edit2 className="w-4 h-4" /></button>
+                                                    </>
+                                                )}
+                                                <div onClick={() => toggleMeal(dateStr, slot.id)} className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors cursor-pointer ${isDone ? 'bg-indigo-500 border-indigo-500' : 'border-slate-300 dark:border-slate-600 group-hover:border-indigo-400'}`}>
+                                                    {isDone && <Check className="w-4 h-4 text-white" />}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        {/* Swap UI Overlay */}
+                                        {isEditingThis && editAction === 'swap' && (
+                                            <div className="absolute inset-0 bg-white/95 dark:bg-slate-800/95 z-10 flex items-center justify-center gap-4 rounded-xl animate-in fade-in">
+                                                <button onClick={swapRandomly} className="px-4 py-2 bg-indigo-500 text-white rounded-lg text-sm font-bold shadow-lg flex items-center gap-2"><RefreshCw className="w-4 h-4" /> Pick Random</button>
+                                                <button onClick={closeEdit} className="px-4 py-2 bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg text-sm font-bold">Cancel</button>
+                                            </div>
+                                        )}
+
+                                        <div className="pl-[3.25rem] text-sm">
+                                            <div className="text-slate-600 dark:text-slate-400 mb-2">{mealData.portion}</div>
+                                            <div className="flex gap-3 text-xs font-mono text-slate-500">
+                                                <span className="bg-slate-100 dark:bg-slate-700 px-1.5 py-0.5 rounded text-rose-600 font-bold">{mealData.p}g P</span>
+                                                <span className="bg-slate-100 dark:bg-slate-700 px-1.5 py-0.5 rounded text-amber-600 font-bold">{mealData.c}g C</span>
+                                                <span className="bg-slate-100 dark:bg-slate-700 px-1.5 py-0.5 rounded text-blue-600 font-bold">{mealData.f}g F</span>
+                                                <span className="text-slate-400 ml-auto">{mealData.kcal} kcal</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                );
+            };
+
+            const renderWeekView = () => { const d = new Date(selectedDate); const day = d.getDay(); const diff = d.getDate() - day + (day === 0 ? -6 : 1); const monday = new Date(d.setDate(diff)); const weekDays = []; for (let i = 0; i < 7; i++) { const temp = new Date(monday); temp.setDate(monday.getDate() + i); weekDays.push(temp); } return (<div className="space-y-4 animate-in fade-in">{weekDays.map((date, idx) => { const plan = mealPlan[date.getDay()]; const isToday = date.toDateString() === today.toDateString(); const isSelected = date.toDateString() === selectedDate.toDateString(); return (<button key={idx} onClick={() => { setSelectedDate(date); setView('day'); }} className={`w-full p-4 rounded-xl text-left border transition ${isSelected ? 'ring-2 ring-indigo-500 bg-indigo-50 dark:bg-indigo-900/10' : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50'} ${isToday ? 'border-l-4 border-l-indigo-500' : 'border-slate-100 dark:border-slate-700'}`}><div className="flex gap-4"><div className="text-center w-12 shrink-0"><div className="text-xs text-slate-400 uppercase font-bold">{date.toLocaleDateString('en-US', { weekday: 'short' })}</div><div className="text-lg font-bold">{date.getDate()}</div></div><div className="flex-1 min-w-0"><div className="text-sm font-bold text-slate-700 dark:text-slate-300 truncate">L: {plan.l.name}</div><div className="text-xs text-slate-500 dark:text-slate-400 mt-1 truncate">D: {plan.d.name}</div></div></div></button>); })}</div>); };
+            const renderMonthView = () => { const year = selectedDate.getFullYear(); const month = selectedDate.getMonth(); const firstDay = new Date(year, month, 1); const lastDay = new Date(year, month + 1, 0); const daysInMonth = lastDay.getDate(); const startDayOffset = firstDay.getDay() === 0 ? 6 : firstDay.getDay() - 1; const days = []; for (let i = 0; i < startDayOffset; i++) days.push(null); for (let i = 1; i <= daysInMonth; i++) days.push(new Date(year, month, i)); return (<div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm p-6 animate-in fade-in"><div className="grid grid-cols-7 gap-2 mb-2 text-center">{['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d,i) => (<div key={i} className="text-xs font-bold text-slate-400">{d}</div>))}</div><div className="grid grid-cols-7 gap-2">{days.map((date, idx) => { if (!date) return <div key={idx} className="aspect-square"></div>; const isSelected = date.toDateString() === selectedDate.toDateString(); const isToday = date.toDateString() === today.toDateString(); const completedCount = (nutritionProgress[date.toDateString()] || []).length; const allDone = completedCount === 5; return (<button key={idx} onClick={() => { setSelectedDate(date); setView('day'); }} className={`aspect-square rounded-lg flex flex-col items-center justify-center p-1 relative border transition hover:scale-105 ${isSelected ? 'ring-2 ring-indigo-500 z-10' : ''} ${isToday ? 'bg-slate-100 dark:bg-slate-700' : 'bg-transparent'} border-slate-100 dark:border-slate-700`}><span className={`text-xs font-medium mb-1 ${isToday ? 'text-indigo-600 font-bold' : ''}`}>{date.getDate()}</span><div className="flex gap-0.5">{completedCount > 0 && <div className={`w-1.5 h-1.5 rounded-full ${allDone ? 'bg-emerald-500' : 'bg-indigo-400'}`}></div>}</div></button>); })}</div></div>); };
+
+            if (showGroceries) return renderGroceryView();
+
+            return (
+                <div className="animate-in fade-in duration-500">
+                    <div className="flex flex-col sm:flex-row justify-between items-center mb-6 gap-4"><div className="flex items-center bg-white dark:bg-slate-800 rounded-lg p-1 shadow-sm border border-slate-100 dark:border-slate-700">{['day', 'week', 'month'].map(v => (<button key={v} onClick={() => setView(v)} className={`px-4 py-1.5 rounded-md text-sm font-medium capitalize transition-all ${view === v ? 'bg-orange-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'}`}>{v}</button>))}</div><div className="flex items-center gap-2 bg-white dark:bg-slate-800 rounded-lg p-1 shadow-sm border border-slate-100 dark:border-slate-700"><button onClick={() => shiftDate(-1, view)} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md"><ChevronLeft className="w-5 h-5 text-slate-500" /></button><button onClick={resetToToday} className="px-3 py-1 text-sm font-bold text-slate-600 dark:text-slate-300 min-w-[120px] text-center">{view === 'day' && selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}{view !== 'day' && selectedDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</button><button onClick={() => shiftDate(1, view)} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md"><ChevronRight className="w-5 h-5 text-slate-500" /></button></div></div>
+                    <div className="min-h-[400px]">{view === 'day' && renderDayView()}{view === 'week' && renderWeekView()}{view === 'month' && renderMonthView()}</div>
+                </div>
+            );
+        };
+
+        // --- MAIN APP ---
+
+        function CirceApp() {
+            // --- GLOBAL STATE ---
+            const [user, setUser] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [currentDate, setCurrentDate] = useState(new Date());
+            const [activeTab, setActiveTab] = useState('focus');
+
+            // --- DATA STATES (Initialized with defaults) ---
+            const [isDarkMode, setIsDarkMode] = useState(true);
+            const [streak, setStreak] = useState(0);
+            const [lastStreakDate, setLastStreakDate] = useState('');
+            const [pomoSettings, setPomoSettings] = useState({ work: 25, shortBreak: 5, longBreak: 15 });
+            const [trackers, setTrackers] = useState(DEFAULT_TRACKERS);
+            const [noteContent, setNoteContent] = useState('');
+            const [gymProgress, setGymProgress] = useState({});
+            const [gymEnvironment, setGymEnvironment] = useState('gym');
+            const [gymStartDate, setGymStartDate] = useState(new Date().toISOString());
+            const [savedDate, setSavedDate] = useState(new Date().toDateString());
+            const [nutritionProgress, setNutritionProgress] = useState({});
+            const [bodyWeight, setBodyWeight] = useState(82.5);
+            // New: Persisted Meal Plan
+            const [mealPlan, setMealPlan] = useState(DEFAULT_MEAL_PLAN);
+
+            const [goalsMetToday, setGoalsMetToday] = useState(false);
             const [pomoMode, setPomoMode] = useState('work');
             const [pomoTime, setPomoTime] = useState(25 * 60);
             const [isPomoRunning, setIsPomoRunning] = useState(false);
-            const [pomoSettings, setPomoSettings] = useState(() => getInitialState('circe-pomoSettings', { work: 25, shortBreak: 5, longBreak: 15 }));
             const [showPomoSettings, setShowPomoSettings] = useState(false);
-
-            // Category Trackers State
-            const [trackers, setTrackers] = useState(getInitialTrackers);
             const [activeTrackerId, setActiveTrackerId] = useState(null);
-            
-            // Tracker Editing State
             const [editingTrackerId, setEditingTrackerId] = useState(null);
             const [editValues, setEditValues] = useState({ hours: 0, minutes: 0 });
 
-            // Notepad State
-            const [noteContent, setNoteContent] = useState(() => localStorage.getItem('circe-notes') || '');
-
-            // --- Persistence Effects ---
-
-            useEffect(() => { localStorage.setItem('circe-darkmode', JSON.stringify(isDarkMode)); }, [isDarkMode]);
-            useEffect(() => { localStorage.setItem('circe-pomoSettings', JSON.stringify(pomoSettings)); }, [pomoSettings]);
-            useEffect(() => { localStorage.setItem('circe-notes', noteContent); }, [noteContent]);
-            useEffect(() => { localStorage.setItem('circe-streak', JSON.stringify(streak)); }, [streak]);
-            useEffect(() => { localStorage.setItem('circe-lastStreakDate', lastStreakDate); }, [lastStreakDate]);
-
-            // Save Trackers & Date
+            // --- AUTH & LOAD EFFECT ---
             useEffect(() => {
-                localStorage.setItem('circe-trackers', JSON.stringify(trackers));
-                localStorage.setItem('circe-date', new Date().toDateString());
-            }, [trackers]);
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                };
+                initAuth();
 
-
-            // --- Logic Effects ---
-
-            useEffect(() => {
-                const timer = setInterval(() => setCurrentDate(new Date()), 60000); 
-                return () => clearInterval(timer);
+                const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+                    setUser(currentUser);
+                    if (!currentUser) setLoading(false);
+                });
+                return () => unsubscribeAuth();
             }, []);
 
+            // --- DATA SYNC EFFECT (READ) ---
             useEffect(() => {
-                const html = document.documentElement;
-                if (isDarkMode) html.classList.add('dark');
-                else html.classList.remove('dark');
-            }, [isDarkMode]);
+                if (!user) return;
 
-            // Gamification Check
+                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', 'storage');
+                const unsubscribeSnapshot = onSnapshot(docRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        
+                        // Load & Handle Daily Reset Logic
+                        const todayStr = new Date().toDateString();
+                        const cloudDate = data.savedDate || todayStr;
+                        
+                        if (cloudDate !== todayStr) {
+                            setTrackers(DEFAULT_TRACKERS); 
+                            setSavedDate(todayStr); 
+                        } else {
+                            if (data.trackers) {
+                                // Filter to ensure we only show currently configured trackers (removes old ones immediately)
+                                const validTrackerIds = new Set(DEFAULT_TRACKERS.map(dt => dt.id));
+                                const hydratedTrackers = data.trackers
+                                    .filter(t => validTrackerIds.has(t.id))
+                                    .map(t => {
+                                        const defaultTracker = DEFAULT_TRACKERS.find(dt => dt.id === t.id);
+                                        return { ...t, icon: defaultTracker ? defaultTracker.icon : Dumbbell };
+                                    });
+                                
+                                // If the saved list is shorter than default (e.g. we added new ones), merge them
+                                if (hydratedTrackers.length < DEFAULT_TRACKERS.length) {
+                                     const missing = DEFAULT_TRACKERS.filter(dt => !hydratedTrackers.find(ht => ht.id === dt.id));
+                                     setTrackers([...hydratedTrackers, ...missing]);
+                                } else {
+                                     setTrackers(hydratedTrackers);
+                                }
+                            }
+                            setSavedDate(cloudDate);
+                        }
+
+                        if (data.isDarkMode !== undefined) setIsDarkMode(data.isDarkMode);
+                        if (data.streak !== undefined) setStreak(data.streak);
+                        if (data.lastStreakDate !== undefined) setLastStreakDate(data.lastStreakDate);
+                        if (data.pomoSettings) setPomoSettings(data.pomoSettings);
+                        if (data.noteContent !== undefined) setNoteContent(data.noteContent);
+                        if (data.gymProgress) setGymProgress(data.gymProgress);
+                        if (data.gymEnvironment) setGymEnvironment(data.gymEnvironment);
+                        if (data.gymStartDate) setGymStartDate(data.gymStartDate);
+                        if (data.nutritionProgress) setNutritionProgress(data.nutritionProgress);
+                        if (data.bodyWeight) setBodyWeight(data.bodyWeight);
+                        if (data.mealPlan) setMealPlan(data.mealPlan); // Load customized plan
+                    } else {
+                        setSavedDate(new Date().toDateString());
+                    }
+                    setLoading(false);
+                }, (error) => {
+                    console.error("Sync Error", error);
+                    setLoading(false);
+                });
+
+                return () => unsubscribeSnapshot();
+            }, [user]);
+
+            // --- DATA SYNC EFFECT (WRITE) ---
+            const debouncedNote = useDebounce(noteContent, 1000);
+            
+            useEffect(() => {
+                if (!user || loading) return;
+
+                const saveData = async () => {
+                    try {
+                        const sanitizedTrackers = trackers.map(({ icon, ...rest }) => rest);
+
+                        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', 'storage');
+                        await setDoc(docRef, {
+                            isDarkMode,
+                            streak,
+                            lastStreakDate,
+                            pomoSettings,
+                            trackers: sanitizedTrackers, 
+                            noteContent: debouncedNote,
+                            gymProgress,
+                            gymEnvironment,
+                            gymStartDate,
+                            savedDate: new Date().toDateString(),
+                            nutritionProgress,
+                            bodyWeight,
+                            mealPlan
+                        }, { merge: true });
+                    } catch (e) {
+                        console.error("Save Error", e);
+                    }
+                };
+                saveData();
+            }, [
+                user, loading, isDarkMode, streak, lastStreakDate, 
+                pomoSettings, trackers, debouncedNote, gymProgress, 
+                gymEnvironment, gymStartDate, nutritionProgress, bodyWeight, mealPlan
+            ]);
+
+
+            // --- LOGIC ---
+            useEffect(() => { const timer = setInterval(() => setCurrentDate(new Date()), 60000); return () => clearInterval(timer); }, []);
+            useEffect(() => { const html = document.documentElement; if (isDarkMode) html.classList.add('dark'); else html.classList.remove('dark'); }, [isDarkMode]);
+
+            // Streak Logic
             useEffect(() => {
                 const todayStr = new Date().toDateString();
                 const mainGoals = trackers.filter(t => t.target > 0);
                 const allFinished = mainGoals.every(t => t.current === 0);
-                
                 setGoalsMetToday(allFinished);
-
                 if (allFinished && lastStreakDate !== todayStr) {
                     setStreak(s => s + 1);
                     setLastStreakDate(todayStr);
                 }
             }, [trackers, lastStreakDate]);
 
-            // Pomodoro Timer Logic
+            // Pomodoro Logic
             useEffect(() => {
                 let interval = null;
                 if (isPomoRunning && pomoTime > 0) {
-                    interval = setInterval(() => {
-                        setPomoTime((prevTime) => prevTime - 1);
-                    }, 1000);
+                    interval = setInterval(() => setPomoTime(t => t - 1), 1000);
                 } else if (pomoTime === 0) {
                     setIsPomoRunning(false);
                 }
                 return () => clearInterval(interval);
             }, [isPomoRunning, pomoTime]);
 
-            // Category Tracker Logic
+            // Trackers Logic
             useEffect(() => {
                 let interval = null;
                 if (activeTrackerId) {
                     interval = setInterval(() => {
-                        setTrackers(prevTrackers => 
-                            prevTrackers.map(t => {
-                                if (t.id === activeTrackerId) {
-                                    if (t.target > 0) {
-                                        // Countdown Logic
-                                        return { ...t, current: Math.max(0, t.current - 1) };
-                                    } else {
-                                        // Countup Logic
-                                        return { ...t, current: t.current + 1 };
-                                    }
-                                }
-                                return t;
-                            })
-                        );
+                        setTrackers(prev => prev.map(t => {
+                            if (t.id === activeTrackerId) {
+                                return t.target > 0 ? { ...t, current: Math.max(0, t.current - 1) } : { ...t, current: t.current + 1 };
+                            }
+                            return t;
+                        }));
                     }, 1000);
                 }
                 return () => clearInterval(interval);
             }, [activeTrackerId]);
 
-            // --- Handlers ---
-
+            // Handlers
             const togglePomoTimer = () => setIsPomoRunning(!isPomoRunning);
-            
-            const resetPomoTimer = () => {
-                setIsPomoRunning(false);
-                setPomoTime(pomoSettings[pomoMode] * 60);
-            };
-
-            const changePomoMode = (mode) => {
-                setPomoMode(mode);
-                setIsPomoRunning(false);
-                setPomoTime(pomoSettings[mode] * 60);
-            };
-
-            const updatePomoSettings = (e) => {
-                const { name, value } = e.target;
-                setPomoSettings(prev => ({ ...prev, [name]: parseInt(value) || 0 }));
-            };
-
-            const toggleTracker = (id) => {
-                if (activeTrackerId === id) {
-                    setActiveTrackerId(null);
-                } else {
-                    setActiveTrackerId(id);
-                }
-            };
-
+            const resetPomoTimer = () => { setIsPomoRunning(false); setPomoTime(pomoSettings[pomoMode] * 60); };
+            const changePomoMode = (mode) => { setPomoMode(mode); setIsPomoRunning(false); setPomoTime(pomoSettings[mode] * 60); };
+            const updatePomoSettings = (e) => setPomoSettings(prev => ({ ...prev, [e.target.name]: parseInt(e.target.value) || 0 }));
+            const toggleTracker = (id) => setActiveTrackerId(activeTrackerId === id ? null : id);
             const resetTracker = (id) => {
-                setTrackers(prevTrackers => 
-                    prevTrackers.map(t => {
-                        if (t.id === id) {
-                            return { ...t, current: t.target > 0 ? t.target : 0 };
-                        }
-                        return t;
-                    })
-                );
+                setTrackers(prev => prev.map(t => t.id === id ? { ...t, current: t.target > 0 ? t.target : 0 } : t));
                 if (activeTrackerId === id) setActiveTrackerId(null);
             };
-
-            // Tracker Edit Handlers
             const startEditingTracker = (tracker, e) => {
                 e.stopPropagation();
                 setEditingTrackerId(tracker.id);
-                const h = Math.floor(tracker.target / 3600);
-                const m = Math.floor((tracker.target % 3600) / 60);
-                setEditValues({ hours: h, minutes: m });
-                // If this tracker was running, pause it while editing
-                if (activeTrackerId === tracker.id) {
-                    setActiveTrackerId(null);
-                }
+                setEditValues({ hours: Math.floor(tracker.target / 3600), minutes: Math.floor((tracker.target % 3600) / 60) });
+                if (activeTrackerId === tracker.id) setActiveTrackerId(null);
             };
-
             const saveTrackerEdit = (id) => {
                 const newTarget = (parseInt(editValues.hours) * 3600) + (parseInt(editValues.minutes) * 60);
-                
                 setTrackers(prev => prev.map(t => {
                     if (t.id === id) {
-                        // If current time hasn't changed from original target, update current to new target
-                        // This handles the "reset on edit" expectation for unused timers
                         const isUnused = t.current === t.target;
-                        
-                        // If target becomes 0 (open ended), set current to 0 so it counts up from 0
-                        if (newTarget === 0) {
-                            return { ...t, target: 0, current: 0 };
-                        }
-
-                        // If it was countdown and staying countdown
-                        return { 
-                            ...t, 
-                            target: newTarget, 
-                            current: isUnused ? newTarget : t.current 
-                        };
+                        if (newTarget === 0) return { ...t, target: 0, current: 0 };
+                        return { ...t, target: newTarget, current: isUnused ? newTarget : t.current };
                     }
                     return t;
                 }));
                 setEditingTrackerId(null);
             };
-
-            const cancelEdit = () => {
-                setEditingTrackerId(null);
+            const cancelEdit = () => setEditingTrackerId(null);
+            const shiftSchedule = () => {
+                const currentStart = new Date(gymStartDate);
+                currentStart.setDate(currentStart.getDate() + 1);
+                setGymStartDate(currentStart.toISOString());
             };
 
-            // --- Render Helpers ---
-            
             const dateOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
             const formattedDate = currentDate.toLocaleDateString('en-US', dateOptions);
 
+            if (loading) {
+                return (
+                    <div className="min-h-screen bg-slate-50 dark:bg-slate-900 flex flex-col items-center justify-center">
+                        <div className="loader mb-4 border-indigo-500 border-t-transparent"></div>
+                        <p className="text-slate-500 dark:text-slate-400 text-sm font-medium animate-pulse">Syncing with Cloud...</p>
+                    </div>
+                );
+            }
+
             return (
-                <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-sans transition-colors duration-300">
+                <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-sans transition-colors duration-300 pb-24">
                     
                     {/* Header */}
                     <header className="px-6 py-6 flex justify-between items-center bg-white dark:bg-slate-800 shadow-sm sticky top-0 z-50 border-b border-slate-100 dark:border-slate-800">
@@ -328,279 +959,73 @@
                             <p className="text-sm text-slate-500 dark:text-slate-400 mt-1 uppercase tracking-wider">{formattedDate}</p>
                         </div>
                         <div className="flex items-center gap-4">
-                            
-                            {/* Streak Counter */}
-                            <div 
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border ${
-                                    goalsMetToday 
-                                    ? 'bg-orange-50 dark:bg-orange-900/20 border-orange-200 dark:border-orange-800 text-orange-600 dark:text-orange-400' 
-                                    : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400'
-                                }`}
-                                title="Daily Goals Streak"
-                            >
+                            {/* Cloud Status Indicator */}
+                            <div title="Data Synced to Cloud" className="text-slate-400">
+                                {user ? <Cloud className="w-4 h-4 text-emerald-500" /> : <CloudOff className="w-4 h-4" />}
+                            </div>
+
+                            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border ${goalsMetToday ? 'bg-orange-50 dark:bg-orange-900/20 border-orange-200 dark:border-orange-800 text-orange-600 dark:text-orange-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400'}`} title="Daily Goals Streak">
                                 <Flame className={`w-4 h-4 ${goalsMetToday ? 'fill-orange-500 animate-pulse' : ''}`} />
                                 <span className="font-mono font-bold text-sm">{streak}</span>
                             </div>
-
-                            <button 
-                                onClick={() => setIsDarkMode(!isDarkMode)}
-                                className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 transition-colors"
-                            >
-                                {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-                            </button>
-                            <div className="hidden md:flex w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900 items-center justify-center text-indigo-700 dark:text-indigo-300 font-bold">
-                                C
-                            </div>
+                            <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 transition-colors">{isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}</button>
+                            <div className="hidden md:flex w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900 items-center justify-center text-indigo-700 dark:text-indigo-300 font-bold">C</div>
                         </div>
                     </header>
 
-                    <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-                    
-                        {/* Left Column: Pomo & Notepad */}
-                        <div className="lg:col-span-4 space-y-6">
-                            
-                            {/* Pomodoro Timer */}
-                            <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-lg p-8 text-center relative overflow-hidden border border-slate-100 dark:border-slate-700">
-                                <div className="absolute top-4 right-4">
-                                    <button onClick={() => setShowPomoSettings(!showPomoSettings)} className="text-slate-400 hover:text-indigo-500 transition">
-                                        <Settings className="w-5 h-5" />
-                                    </button>
-                                </div>
-
-                                {showPomoSettings ? (
-                                    <div className="animate-in fade-in zoom-in duration-200">
-                                        <div className="flex justify-between items-center mb-4">
-                                            <h3 className="font-semibold text-lg">Timer Settings</h3>
-                                            <button onClick={() => { setShowPomoSettings(false); resetPomoTimer(); }}><X className="w-5 h-5" /></button>
-                                        </div>
-                                        <div className="space-y-4 text-left">
-                                            <div>
-                                                <label className="text-xs uppercase font-bold text-slate-400">Work (min)</label>
-                                                <input type="number" name="work" value={pomoSettings.work} onChange={updatePomoSettings} className="w-full mt-1 p-2 bg-slate-100 dark:bg-slate-700 rounded-lg" />
-                                            </div>
-                                            <div>
-                                                <label className="text-xs uppercase font-bold text-slate-400">Short Break (min)</label>
-                                                <input type="number" name="shortBreak" value={pomoSettings.shortBreak} onChange={updatePomoSettings} className="w-full mt-1 p-2 bg-slate-100 dark:bg-slate-700 rounded-lg" />
-                                            </div>
-                                            <div>
-                                                <label className="text-xs uppercase font-bold text-slate-400">Long Break (min)</label>
-                                                <input type="number" name="longBreak" value={pomoSettings.longBreak} onChange={updatePomoSettings} className="w-full mt-1 p-2 bg-slate-100 dark:bg-slate-700 rounded-lg" />
-                                            </div>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <>
-                                        <div className="flex justify-center gap-2 mb-8">
-                                            {['work', 'shortBreak', 'longBreak'].map((mode) => (
-                                                <button
-                                                    key={mode}
-                                                    onClick={() => changePomoMode(mode)}
-                                                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                                                    pomoMode === mode 
-                                                        ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300' 
-                                                        : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
-                                                    }`}
-                                                >
-                                                    {mode === 'work' ? 'Focus' : mode === 'shortBreak' ? 'Short Break' : 'Long Break'}
-                                                </button>
-                                            ))}
-                                        </div>
-
-                                        <div className="text-7xl font-mono font-bold tracking-tighter text-slate-800 dark:text-slate-100 mb-8">
-                                            {formatTime(pomoTime)}
-                                        </div>
-
-                                        <div className="flex justify-center gap-4">
-                                            <button 
-                                                onClick={togglePomoTimer}
-                                                className="w-14 h-14 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center shadow-lg shadow-indigo-200 dark:shadow-none transition-transform hover:scale-105 active:scale-95"
-                                            >
-                                                {isPomoRunning ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current ml-1" />}
-                                            </button>
-                                            <button 
-                                                onClick={resetPomoTimer}
-                                                className="w-14 h-14 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-600 transition"
-                                            >
-                                                <RotateCcw className="w-5 h-5" />
-                                            </button>
-                                        </div>
-                                    </>
-                                )}
-                            </div>
-
-                            {/* Notepad Widget */}
-                            <div className="bg-yellow-50 dark:bg-yellow-900/10 rounded-2xl shadow-sm border border-yellow-100 dark:border-yellow-900/30 overflow-hidden flex flex-col h-[400px] relative">
-                                <div className="p-4 border-b border-yellow-100 dark:border-yellow-900/30 flex justify-between items-center bg-yellow-50 dark:bg-yellow-900/20 z-10">
-                                    <h2 className="text-xl font-semibold flex items-center gap-2 text-yellow-800 dark:text-yellow-500">
-                                        <StickyNote className="w-5 h-5" />
-                                        <span>Notes</span>
-                                    </h2>
-                                    <PenLine className="w-4 h-4 text-yellow-600 dark:text-yellow-500 opacity-50" />
-                                </div>
-                                
-                                <div className="flex-1 relative p-0">
-                                    <textarea
-                                        value={noteContent}
-                                        onChange={(e) => setNoteContent(e.target.value)}
-                                        placeholder="Type your thoughts here..."
-                                        className="w-full h-full p-6 bg-transparent resize-none focus:outline-none text-slate-700 dark:text-slate-200 text-sm leading-relaxed"
-                                        style={{
-                                            backgroundImage: 'linear-gradient(transparent 31px, rgba(0,0,0,0.05) 32px)',
-                                            backgroundSize: '100% 32px',
-                                            lineHeight: '32px'
-                                        }}
-                                    />
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Right Column: Split Set Trackers */}
-                        <div className="lg:col-span-8">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-full">
-                                {trackers.map((tracker) => (
-                                    <div 
-                                        key={tracker.id}
-                                        className={`
-                                            relative rounded-2xl p-6 border transition-all duration-300 flex flex-col justify-between
-                                            ${activeTrackerId === tracker.id 
-                                            ? 'bg-white dark:bg-slate-800 border-indigo-500 shadow-md ring-1 ring-indigo-500' 
-                                            : 'bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-700 shadow-sm hover:shadow-md'
-                                            }
-                                        `}
-                                    >
-                                        {/* Edit Mode View */}
-                                        {editingTrackerId === tracker.id ? (
-                                            <div className="h-full flex flex-col justify-center animate-in fade-in">
-                                                <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
-                                                    <tracker.icon className="w-5 h-5" />
-                                                    Edit {tracker.name}
-                                                </h3>
-                                                <div className="grid grid-cols-2 gap-4 mb-6">
-                                                    <div>
-                                                        <label className="text-xs uppercase font-bold text-slate-400">Hours</label>
-                                                        <input 
-                                                            type="number" 
-                                                            min="0"
-                                                            value={editValues.hours}
-                                                            onChange={(e) => setEditValues({...editValues, hours: e.target.value})}
-                                                            className="w-full mt-1 p-3 bg-slate-100 dark:bg-slate-700 rounded-lg text-lg font-mono"
-                                                        />
-                                                    </div>
-                                                    <div>
-                                                        <label className="text-xs uppercase font-bold text-slate-400">Minutes</label>
-                                                        <input 
-                                                            type="number" 
-                                                            min="0" 
-                                                            max="59"
-                                                            value={editValues.minutes}
-                                                            onChange={(e) => setEditValues({...editValues, minutes: e.target.value})}
-                                                            className="w-full mt-1 p-3 bg-slate-100 dark:bg-slate-700 rounded-lg text-lg font-mono"
-                                                        />
-                                                    </div>
-                                                </div>
-                                                <div className="flex gap-2">
-                                                    <button 
-                                                        onClick={() => saveTrackerEdit(tracker.id)}
-                                                        className="flex-1 py-2 bg-indigo-500 text-white rounded-lg flex items-center justify-center gap-2 hover:bg-indigo-600 transition"
-                                                    >
-                                                        <Check className="w-4 h-4" /> Save
-                                                    </button>
-                                                    <button 
-                                                        onClick={cancelEdit}
-                                                        className="flex-1 py-2 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg flex items-center justify-center gap-2 hover:bg-slate-200 dark:hover:bg-slate-600 transition"
-                                                    >
-                                                        <X className="w-4 h-4" /> Cancel
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        ) : (
-                                            /* Normal View */
-                                            <>
-                                                <div className="absolute top-4 right-4 z-10">
-                                                     <button 
-                                                        onClick={(e) => startEditingTracker(tracker, e)}
-                                                        className="p-1.5 text-slate-300 hover:text-indigo-500 dark:text-slate-600 dark:hover:text-indigo-400 transition"
-                                                        title="Edit Goal"
-                                                     >
-                                                         <Settings className="w-4 h-4" />
-                                                     </button>
-                                                </div>
-
-                                                <div className="flex justify-between items-start mb-4">
-                                                    <div className={`p-3 rounded-xl ${tracker.color} bg-opacity-10 text-${tracker.color.split('-')[1]}-600 dark:text-${tracker.color.split('-')[1]}-400`}>
-                                                        <tracker.icon className={`w-6 h-6 text-${tracker.color.split('-')[1]}-600`} />
-                                                    </div>
-                                                    <div className="text-right pr-6">
-                                                        <span className="block text-2xl font-mono font-semibold">
-                                                            {Math.floor(tracker.current / 3600)}h {Math.floor((tracker.current % 3600) / 60)}m
-                                                        </span>
-                                                        {tracker.target > 0 ? (
-                                                            <span className="text-xs text-slate-400">
-                                                                Remaining
-                                                            </span>
-                                                        ) : (
-                                                            <span className="text-xs text-slate-400">
-                                                                Elapsed
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                </div>
-
-                                                <div>
-                                                    <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-1">{tracker.name}</h3>
-                                                    <div className="flex items-center justify-between text-xs text-slate-400 mb-3">
-                                                        {tracker.target > 0 ? (
-                                                            <span>{Math.round((tracker.current / tracker.target) * 100)}% Left</span>
-                                                        ) : (
-                                                            <span>Open-ended session</span>
-                                                        )}
-                                                        
-                                                        {/* Reset Button (only if changed) */}
-                                                        {tracker.current !== (tracker.target > 0 ? tracker.target : 0) && (
-                                                            <button 
-                                                                onClick={(e) => { e.stopPropagation(); resetTracker(tracker.id); }}
-                                                                className="hover:text-rose-500 transition-colors p-1"
-                                                                title="Reset Timer"
-                                                            >
-                                                                <RotateCcw className="w-3.5 h-3.5" />
-                                                            </button>
-                                                        )}
-                                                    </div>
-                                                    
-                                                    {tracker.target > 0 && (
-                                                        <ProgressBar current={tracker.current} target={tracker.target} colorClass={tracker.color} />
-                                                    )}
-                                                </div>
-
-                                                <div className="mt-6">
-                                                    <button
-                                                        onClick={() => toggleTracker(tracker.id)}
-                                                        className={`
-                                                            w-full py-3 rounded-xl font-medium flex items-center justify-center gap-2 transition-colors
-                                                            ${activeTrackerId === tracker.id
-                                                            ? 'bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/30'
-                                                            : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
-                                                            }
-                                                        `}
-                                                    >
-                                                        {activeTrackerId === tracker.id ? (
-                                                            <>
-                                                                <Pause className="w-4 h-4" /> Pause
-                                                            </>
-                                                        ) : (
-                                                            <>
-                                                                <Play className="w-4 h-4" /> Start
-                                                            </>
-                                                        )}
-                                                    </button>
-                                                </div>
-                                            </>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
+                    <main className="max-w-7xl mx-auto p-6">
+                        {activeTab === 'focus' && (
+                            <ProductivityTab 
+                                pomoState={{ pomoMode, pomoTime, isPomoRunning, pomoSettings, showPomoSettings, setShowPomoSettings, togglePomoTimer, resetPomoTimer, changePomoMode, updatePomoSettings }}
+                                trackersState={{ trackers, activeTrackerId, toggleTracker, resetTracker, startEditingTracker }}
+                                noteState={{ noteContent, setNoteContent }}
+                                editState={{ editingTrackerId, editValues, setEditValues, saveTrackerEdit, cancelEdit }}
+                            />
+                        )}
+                        {activeTab === 'gym' && (
+                            <GymTab 
+                                startDate={gymStartDate} 
+                                progress={gymProgress} 
+                                setProgress={setGymProgress}
+                                environment={gymEnvironment}
+                                setEnvironment={setGymEnvironment}
+                                shiftSchedule={shiftSchedule}
+                            />
+                        )}
+                        {activeTab === 'food' && (
+                            <NutritionTab
+                                nutritionProgress={nutritionProgress}
+                                setNutritionProgress={setNutritionProgress}
+                                bodyWeight={bodyWeight}
+                                setBodyWeight={setBodyWeight}
+                                mealPlan={mealPlan}
+                                setMealPlan={setMealPlan}
+                            />
+                        )}
                     </main>
+
+                    {/* Bottom Navigation */}
+                    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-white dark:bg-slate-800 rounded-full shadow-2xl border border-slate-200 dark:border-slate-700 p-1.5 flex gap-2 z-50">
+                        <button 
+                            onClick={() => setActiveTab('focus')}
+                            className={`px-6 py-2.5 rounded-full flex items-center gap-2 font-medium transition-all ${activeTab === 'focus' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 dark:shadow-none' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'}`}
+                        >
+                            <LayoutDashboard className="w-4 h-4" /> Focus
+                        </button>
+                        <button 
+                            onClick={() => setActiveTab('gym')}
+                            className={`px-6 py-2.5 rounded-full flex items-center gap-2 font-medium transition-all ${activeTab === 'gym' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 dark:shadow-none' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'}`}
+                        >
+                            <Dumbbell className="w-4 h-4" /> Gym
+                        </button>
+                        <button 
+                            onClick={() => setActiveTab('food')}
+                            className={`px-6 py-2.5 rounded-full flex items-center gap-2 font-medium transition-all ${activeTab === 'food' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 dark:shadow-none' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'}`}
+                        >
+                            <Utensils className="w-4 h-4" /> Food
+                        </button>
+                    </div>
+
                 </div>
             );
         }
